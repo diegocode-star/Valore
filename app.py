@@ -129,6 +129,14 @@ def authenticate_user(email, password):
         return None, None
     return int(df.iloc[0]["id"]), df.iloc[0]["nombre"]
 
+def email_exists(email):
+    df = query("SELECT id FROM usuarios WHERE email=?", (email.strip().lower(),))
+    return not df.empty
+
+def reset_password(email, new_password):
+    run("UPDATE usuarios SET password_hash=? WHERE email=?",
+        (hash_password(new_password), email.strip().lower()))
+
 def uid():
     return st.session_state.get("user_id", 1)
 
@@ -186,10 +194,15 @@ CSS = """
 [data-baseweb="popover"] ul li { background:#FFFFFF !important; color:#1c1829 !important; }
 [data-baseweb="popover"] ul li:hover { background:#FDFAF5 !important; }
 
-/* Buttons */
+/* Buttons — default = dorado (inactivo / acciones) */
 .stButton > button { background:#b78a00 !important; color:#FFFFFF !important; border:none !important; border-radius:14px !important; font-weight:700 !important; font-size:14px !important; padding:13px 20px !important; width:100% !important; box-shadow:0 4px 14px rgba(183,138,0,0.25) !important; transition:all 0.15s ease !important; }
 .stButton > button:hover { background:#9a7400 !important; box-shadow:0 6px 20px rgba(183,138,0,0.35) !important; transform:translateY(-1px) !important; }
 .stButton > button *, .stButton > button p, .stButton > button span, .stButton > button div { color:#FFFFFF !important; }
+/* type="primary" = botón activo en login (#322b49) — mayor especificidad gana */
+.stButton > button[data-testid="baseButton-primary"],
+.stButton > button[kind="primary"] { background:#322b49 !important; box-shadow:0 2px 10px rgba(50,43,73,0.3) !important; }
+.stButton > button[data-testid="baseButton-primary"]:hover,
+.stButton > button[kind="primary"]:hover { background:#221e32 !important; }
 [data-testid="stFormSubmitButton"] > button { background:#b78a00 !important; color:#FFFFFF !important; border:none !important; border-radius:14px !important; font-weight:700 !important; font-size:14px !important; padding:13px 20px !important; width:100% !important; box-shadow:0 4px 14px rgba(183,138,0,0.25) !important; margin-top:6px !important; }
 [data-testid="stFormSubmitButton"] > button *, [data-testid="stFormSubmitButton"] > button p, [data-testid="stFormSubmitButton"] > button span, [data-testid="stFormSubmitButton"] > button div { color:#FFFFFF !important; }
 [data-testid="baseButton-secondary"] { background:rgba(192,57,43,0.08) !important; color:#C0392B !important; border:1px solid rgba(192,57,43,0.2) !important; border-radius:10px !important; padding:8px 6px !important; box-shadow:none !important; font-size:15px !important; font-weight:600 !important; line-height:1 !important; margin-top:4px !important; transform:none !important; }
@@ -453,39 +466,51 @@ def page_auth():
     if "auth_mode" not in st.session_state:
         st.session_state.auth_mode = "login"
 
-    # CSS para el botón inactivo según el modo actual
-    if st.session_state.auth_mode == "login":
-        st.markdown("""<style>
-        [data-testid="stHorizontalBlock"] [data-testid="column"]:nth-child(2) .stButton button {
-            background: transparent !important; color: #322b49 !important;
-            border: 1.5px solid #b78a00 !important; box-shadow: none !important; }
-        [data-testid="stHorizontalBlock"] [data-testid="column"]:nth-child(2) .stButton button *,
-        [data-testid="stHorizontalBlock"] [data-testid="column"]:nth-child(2) .stButton button p,
-        [data-testid="stHorizontalBlock"] [data-testid="column"]:nth-child(2) .stButton button span
-            { color: #322b49 !important; }
-        </style>""", unsafe_allow_html=True)
-    else:
-        st.markdown("""<style>
-        [data-testid="stHorizontalBlock"] [data-testid="column"]:nth-child(1) .stButton button {
-            background: transparent !important; color: #322b49 !important;
-            border: 1.5px solid #b78a00 !important; box-shadow: none !important; }
-        [data-testid="stHorizontalBlock"] [data-testid="column"]:nth-child(1) .stButton button *,
-        [data-testid="stHorizontalBlock"] [data-testid="column"]:nth-child(1) .stButton button p,
-        [data-testid="stHorizontalBlock"] [data-testid="column"]:nth-child(1) .stButton button span
-            { color: #322b49 !important; }
-        </style>""", unsafe_allow_html=True)
+    mode = st.session_state.auth_mode
 
+    # ── Flujo de recuperación de contraseña ──────────────────────────────────
+    if mode == "reset_email":
+        st.markdown(f'<p style="color:#322b49;font-size:16px;font-weight:600;margin:0 0 4px;">Recuperar contraseña</p>'
+                    f'<p style="color:#6b6285;font-size:13px;margin:0 0 20px;">Ingresa tu email y crea una nueva contraseña.</p>',
+                    unsafe_allow_html=True)
+        with st.form("form_reset", clear_on_submit=False):
+            email    = st.text_input("Email registrado", placeholder="tu@email.com")
+            new_pass = st.text_input("Nueva contraseña", type="password", placeholder="Mínimo 6 caracteres")
+            confirm  = st.text_input("Confirmar contraseña", type="password", placeholder="Repite la contraseña")
+            ok = st.form_submit_button("Guardar nueva contraseña", use_container_width=True)
+            if ok:
+                if not email or not new_pass or not confirm:
+                    st.error("Completa todos los campos.")
+                elif not email_exists(email):
+                    st.error("No encontramos una cuenta con ese email.")
+                elif len(new_pass) < 6:
+                    st.error("La contraseña debe tener al menos 6 caracteres.")
+                elif new_pass != confirm:
+                    st.error("Las contraseñas no coinciden.")
+                else:
+                    reset_password(email, new_pass)
+                    st.success("Contraseña actualizada. Ya puedes iniciar sesión.")
+                    st.session_state.auth_mode = "login"
+                    st.rerun()
+        if st.button("← Volver al login", key="back_to_login"):
+            st.session_state.auth_mode = "login"
+            st.rerun()
+        return
+
+    # ── Tabs login / registro — Python puro, type="primary" marca el activo ──
     col_a, col_b = st.columns(2)
     with col_a:
-        if st.button("Iniciar sesión", key="tab_login", use_container_width=True):
+        kw = {"type": "primary"} if mode == "login" else {}
+        if st.button("Iniciar sesión", key="tab_login", use_container_width=True, **kw):
             st.session_state.auth_mode = "login"
             st.rerun()
     with col_b:
-        if st.button("Crear cuenta", key="tab_register", use_container_width=True):
+        kw = {"type": "primary"} if mode == "register" else {}
+        if st.button("Crear cuenta", key="tab_register", use_container_width=True, **kw):
             st.session_state.auth_mode = "register"
             st.rerun()
 
-    if st.session_state.auth_mode == "login":
+    if mode == "login":
         with st.form("form_login", clear_on_submit=False):
             email    = st.text_input("Email", placeholder="tu@email.com")
             password = st.text_input("Contraseña", type="password", placeholder="••••••")
@@ -500,8 +525,17 @@ def page_auth():
                         st.session_state.user_name = nombre
                         st.rerun()
                     else:
-                        st.error("Email o contraseña incorrectos.")
-    else:  # auth_mode == "register"
+                        if email_exists(email):
+                            st.error("Contraseña incorrecta.")
+                        else:
+                            st.error("No encontramos una cuenta con ese email.")
+        _, col_mid, _ = st.columns([1, 2, 1])
+        with col_mid:
+            if st.button("¿Olvidaste tu contraseña?", key="go_reset", use_container_width=True):
+                st.session_state.auth_mode = "reset_email"
+                st.rerun()
+
+    else:  # register
         with st.form("form_register", clear_on_submit=False):
             nombre   = st.text_input("Tu nombre", placeholder="Diego")
             email    = st.text_input("Email", placeholder="tu@email.com")
@@ -516,9 +550,14 @@ def page_auth():
                     success, err = create_user(nombre, email, password)
                     if success:
                         user_id, uname = authenticate_user(email, password)
-                        st.session_state.user_id   = user_id
-                        st.session_state.user_name = uname
-                        st.rerun()
+                        if user_id:
+                            st.session_state.user_id   = user_id
+                            st.session_state.user_name = uname
+                            st.rerun()
+                        else:
+                            st.error("Cuenta creada. Por favor inicia sesión.")
+                            st.session_state.auth_mode = "login"
+                            st.rerun()
                     else:
                         st.error(err)
 
@@ -984,7 +1023,7 @@ st.markdown("""
 <meta name="theme-color" content="#322b49">
 """, unsafe_allow_html=True)
 
-if "user_id" not in st.session_state:
+if not st.session_state.get("user_id"):
     page_auth()
 else:
     # Header

@@ -1,13 +1,19 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 from datetime import date
 import hashlib
 import plotly.graph_objects as go
+import os
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+from supabase import create_client
 
 # ─── Constants ────────────────────────────────────────────────────────────────
-DB_PATH = "finanzas.db"
-
 CATEGORIAS_INGRESO = ["Salario", "Préstamo", "Otro"]
 CATEGORIAS_GASTO   = ["Alimentación", "Transporte", "Vivienda", "Salud", "Educación",
                       "Entretenimiento", "Ropa", "Servicios", "Deudas", "Otro gasto"]
@@ -46,69 +52,87 @@ def cat_colors(categories):
     """Devuelve una lista de colores estables para una lista de categorías."""
     return [CAT_COLOR_MAP.get(c, CHART_COLORS[hash(c) % len(CHART_COLORS)]) for c in categories]
 
-# ─── Database ─────────────────────────────────────────────────────────────────
+# ─── Supabase Client ──────────────────────────────────────────────────────────
+@st.cache_resource
+def get_supabase():
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+    except (KeyError, FileNotFoundError):
+        url = os.getenv("SUPABASE_URL", "")
+        key = os.getenv("SUPABASE_KEY", "")
+    if not url or not key:
+        st.error("Configura SUPABASE_URL y SUPABASE_KEY en los secrets de Streamlit o en el archivo .env")
+        st.stop()
+    return create_client(url, key)
+
+def sb():
+    return get_supabase()
+
+def _df(resp):
+    """Convierte respuesta de Supabase a DataFrame vacío o con datos."""
+    return pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
+
+# ─── Database Init ────────────────────────────────────────────────────────────
+_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS usuarios (
+    id BIGSERIAL PRIMARY KEY,
+    nombre TEXT NOT NULL,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS transacciones (
+    id BIGSERIAL PRIMARY KEY,
+    fecha TEXT NOT NULL, tipo TEXT NOT NULL, categoria TEXT NOT NULL,
+    descripcion TEXT, monto DOUBLE PRECISION NOT NULL,
+    cuenta TEXT DEFAULT 'Efectivo', user_id BIGINT NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS portafolio (
+    id BIGSERIAL PRIMARY KEY,
+    nombre TEXT NOT NULL, tipo TEXT NOT NULL,
+    cantidad DOUBLE PRECISION NOT NULL, valor_unitario DOUBLE PRECISION NOT NULL,
+    fecha TEXT NOT NULL, user_id BIGINT NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS deudas (
+    id BIGSERIAL PRIMARY KEY,
+    nombre TEXT NOT NULL, tipo TEXT NOT NULL,
+    deuda_inicial DOUBLE PRECISION NOT NULL, saldo DOUBLE PRECISION NOT NULL,
+    tasa_interes DOUBLE PRECISION NOT NULL DEFAULT 0,
+    pago_minimo DOUBLE PRECISION NOT NULL DEFAULT 0,
+    fecha_inicio TEXT NOT NULL, user_id BIGINT NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS pagos_deuda (
+    id BIGSERIAL PRIMARY KEY,
+    deuda_id BIGINT NOT NULL, fecha TEXT NOT NULL,
+    monto DOUBLE PRECISION NOT NULL, nota TEXT
+);
+CREATE TABLE IF NOT EXISTS metas (
+    id BIGSERIAL PRIMARY KEY,
+    nombre TEXT NOT NULL, objetivo DOUBLE PRECISION NOT NULL,
+    actual DOUBLE PRECISION NOT NULL DEFAULT 0,
+    fecha_limite TEXT, emoji TEXT NOT NULL DEFAULT '🎯',
+    user_id BIGINT NOT NULL DEFAULT 1
+);
+"""
+
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS usuarios (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                nombre TEXT NOT NULL,
-                email TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS transacciones (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT NOT NULL,
-                tipo TEXT NOT NULL, categoria TEXT NOT NULL,
-                descripcion TEXT, monto REAL NOT NULL,
-                cuenta TEXT DEFAULT 'Efectivo',
-                user_id INTEGER NOT NULL DEFAULT 1
-            );
-            CREATE TABLE IF NOT EXISTS portafolio (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT NOT NULL,
-                tipo TEXT NOT NULL, cantidad REAL NOT NULL,
-                valor_unitario REAL NOT NULL, fecha TEXT NOT NULL,
-                user_id INTEGER NOT NULL DEFAULT 1
-            );
-            CREATE TABLE IF NOT EXISTS deudas (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT NOT NULL,
-                tipo TEXT NOT NULL, deuda_inicial REAL NOT NULL,
-                saldo REAL NOT NULL, tasa_interes REAL NOT NULL DEFAULT 0,
-                pago_minimo REAL NOT NULL DEFAULT 0, fecha_inicio TEXT NOT NULL,
-                user_id INTEGER NOT NULL DEFAULT 1
-            );
-            CREATE TABLE IF NOT EXISTS pagos_deuda (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, deuda_id INTEGER NOT NULL,
-                fecha TEXT NOT NULL, monto REAL NOT NULL, nota TEXT
-            );
-            CREATE TABLE IF NOT EXISTS metas (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT NOT NULL,
-                objetivo REAL NOT NULL, actual REAL NOT NULL DEFAULT 0,
-                fecha_limite TEXT, emoji TEXT NOT NULL DEFAULT '🎯',
-                user_id INTEGER NOT NULL DEFAULT 1
-            );
-        """)
-        conn.commit()
-        for migration in [
-            "ALTER TABLE transacciones ADD COLUMN cuenta TEXT DEFAULT 'Efectivo'",
-            "ALTER TABLE transacciones ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
-            "ALTER TABLE portafolio ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
-            "ALTER TABLE deudas ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
-            "ALTER TABLE metas ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
-        ]:
-            try:
-                conn.execute(migration)
-                conn.commit()
-            except Exception:
-                pass
-
-def run(sql, params=()):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(sql, params)
-        conn.commit()
-
-def query(sql, params=()):
-    with sqlite3.connect(DB_PATH) as conn:
-        return pd.read_sql_query(sql, conn, params=params)
+    """Verifica la conexión con Supabase y que las tablas existan."""
+    try:
+        sb().table("usuarios").select("id").limit(1).execute()
+    except Exception as e:
+        err = str(e)
+        if "PGRST205" in err or "schema cache" in err:
+            st.error("Las tablas de Supabase no existen todavía.")
+            st.markdown("""
+**Paso único de configuración:**
+1. Abre el [SQL Editor de Supabase](https://supabase.com/dashboard/project/vyhlfosmnbetiohtcxbp/sql/new)
+2. Pega y ejecuta el SQL que aparece abajo
+3. Recarga esta página
+""")
+            st.code(_SCHEMA_SQL, language="sql")
+        else:
+            st.error(f"No se pudo conectar a Supabase: {e}")
+        st.stop()
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 def hash_password(password):
@@ -116,26 +140,31 @@ def hash_password(password):
 
 def create_user(nombre, email, password):
     try:
-        run("INSERT INTO usuarios (nombre, email, password_hash) VALUES (?,?,?)",
-            (nombre.strip(), email.strip().lower(), hash_password(password)))
+        sb().table("usuarios").insert({
+            "nombre": nombre.strip(),
+            "email": email.strip().lower(),
+            "password_hash": hash_password(password)
+        }).execute()
         return True, None
-    except sqlite3.IntegrityError:
-        return False, "Este email ya está registrado."
+    except Exception as e:
+        err = str(e).lower()
+        if "duplicate" in err or "unique" in err or "23505" in err:
+            return False, "Este email ya está registrado."
+        return False, f"Error al crear cuenta: {e}"
 
 def authenticate_user(email, password):
-    df = query("SELECT id, nombre FROM usuarios WHERE email=? AND password_hash=?",
-               (email.strip().lower(), hash_password(password)))
-    if df.empty:
+    resp = sb().table("usuarios").select("id, nombre").eq("email", email.strip().lower()).eq("password_hash", hash_password(password)).execute()
+    if not resp.data:
         return None, None
-    return int(df.iloc[0]["id"]), df.iloc[0]["nombre"]
+    row = resp.data[0]
+    return int(row["id"]), row["nombre"]
 
 def email_exists(email):
-    df = query("SELECT id FROM usuarios WHERE email=?", (email.strip().lower(),))
-    return not df.empty
+    resp = sb().table("usuarios").select("id").eq("email", email.strip().lower()).execute()
+    return bool(resp.data)
 
 def reset_password(email, new_password):
-    run("UPDATE usuarios SET password_hash=? WHERE email=?",
-        (hash_password(new_password), email.strip().lower()))
+    sb().table("usuarios").update({"password_hash": hash_password(new_password)}).eq("email", email.strip().lower()).execute()
 
 def uid():
     return st.session_state.get("user_id", 1)
@@ -563,8 +592,8 @@ def page_auth():
 
 # ─── Pages ────────────────────────────────────────────────────────────────────
 def page_dashboard():
-    df = query("SELECT * FROM transacciones WHERE user_id=? ORDER BY fecha DESC, id DESC",
-               params=(uid(),))
+    resp = sb().table("transacciones").select("*").eq("user_id", uid()).order("fecha", desc=True).order("id", desc=True).execute()
+    df = _df(resp)
 
     if df.empty:
         st.markdown(balance_card_html(0, 0, 0), unsafe_allow_html=True)
@@ -641,12 +670,14 @@ def page_transacciones():
             elif not monto or monto <= 0:
                 st.error("El monto debe ser mayor a 0.")
             else:
-                run("INSERT INTO transacciones (fecha,tipo,categoria,descripcion,monto,cuenta,user_id) VALUES (?,?,?,?,?,?,?)",
-                    (str(fecha), tipo, cat_final, descripcion, monto, cuenta, uid()))
+                sb().table("transacciones").insert({
+                    "fecha": str(fecha), "tipo": tipo, "categoria": cat_final,
+                    "descripcion": descripcion, "monto": monto, "cuenta": cuenta, "user_id": uid()
+                }).execute()
                 st.success(f"{'Ingreso' if tipo=='Ingreso' else 'Gasto'} de {cop(monto)} guardado.")
 
-    df = query("SELECT * FROM transacciones WHERE user_id=? ORDER BY fecha DESC, id DESC",
-               params=(uid(),))
+    resp = sb().table("transacciones").select("*").eq("user_id", uid()).order("fecha", desc=True).order("id", desc=True).execute()
+    df = _df(resp)
     if df.empty:
         st.info("Sin transacciones aún.")
         return
@@ -730,14 +761,15 @@ def page_transacciones():
             </div>""", unsafe_allow_html=True)
         with col_del:
             if st.button("✕", key=f"del_{r['id']}", type="secondary", use_container_width=True, help="Eliminar"):
-                run("DELETE FROM transacciones WHERE id=? AND user_id=?", (int(r["id"]), uid()))
+                sb().table("transacciones").delete().eq("id", int(r["id"])).eq("user_id", uid()).execute()
                 st.rerun()
 
     st.markdown(f'<p style="color:#6b6285;font-size:12px;text-align:center;margin-top:4px;">{len(dff)} transacciones</p>', unsafe_allow_html=True)
 
 
 def page_portafolio():
-    df    = query("SELECT * FROM portafolio WHERE user_id=? ORDER BY id DESC", params=(uid(),))
+    resp = sb().table("portafolio").select("*").eq("user_id", uid()).order("id", desc=True).execute()
+    df   = _df(resp)
     total = df["cantidad"].sum() if not df.empty else 0
 
     st.markdown(card_wrap(f"""
@@ -762,8 +794,10 @@ def page_portafolio():
             elif not valor or valor <= 0:
                 st.error("El valor debe ser mayor a 0.")
             else:
-                run("INSERT INTO portafolio (nombre,tipo,cantidad,valor_unitario,fecha,user_id) VALUES (?,?,?,?,?,?)",
-                    (nombre, tipo, valor, 1.0, str(fecha), uid()))
+                sb().table("portafolio").insert({
+                    "nombre": nombre, "tipo": tipo, "cantidad": valor,
+                    "valor_unitario": 1.0, "fecha": str(fecha), "user_id": uid()
+                }).execute()
                 st.success(f"{nombre} agregado al portafolio.")
                 st.rerun()
 
@@ -796,7 +830,7 @@ def page_portafolio():
                 c1, c2 = st.columns(2)
                 with c1:
                     if st.button("💾 Guardar", key=f"save_{r['id']}", use_container_width=True):
-                        run("UPDATE portafolio SET cantidad=? WHERE id=? AND user_id=?", (nuevo_valor, r["id"], uid()))
+                        sb().table("portafolio").update({"cantidad": nuevo_valor}).eq("id", int(r["id"])).eq("user_id", uid()).execute()
                         st.session_state.editing_asset_id = None
                         st.rerun()
                 with c2:
@@ -824,12 +858,13 @@ def page_portafolio():
         opciones = {f"{r['nombre']} · {r['tipo']} (#{r['id']})": r["id"] for _, r in df.iterrows()}
         sel = st.selectbox("Selecciona", list(opciones.keys()), key="del_activo")
         if st.button("Eliminar activo", key="btn_del_activo"):
-            run("DELETE FROM portafolio WHERE id=? AND user_id=?", (opciones[sel], uid()))
+            sb().table("portafolio").delete().eq("id", int(opciones[sel])).eq("user_id", uid()).execute()
             st.rerun()
 
 
 def page_metas():
-    df = query("SELECT * FROM metas WHERE user_id=? ORDER BY id DESC", params=(uid(),))
+    resp = sb().table("metas").select("*").eq("user_id", uid()).order("id", desc=True).execute()
+    df   = _df(resp)
 
     st.markdown(section_title("Nueva meta"), unsafe_allow_html=True)
     with st.form("form_meta", clear_on_submit=True):
@@ -851,8 +886,11 @@ def page_metas():
             elif not objetivo or objetivo <= 0:
                 st.error("El objetivo debe ser mayor a 0.")
             else:
-                run("INSERT INTO metas (nombre,objetivo,actual,fecha_limite,emoji,user_id) VALUES (?,?,0,?,?,?)",
-                    (nombre, objetivo, str(deadline) if deadline else None, emoji, uid()))
+                sb().table("metas").insert({
+                    "nombre": nombre, "objetivo": objetivo, "actual": 0,
+                    "fecha_limite": str(deadline) if deadline else None,
+                    "emoji": emoji, "user_id": uid()
+                }).execute()
                 st.success(f"Meta '{nombre}' creada.")
                 st.rerun()
 
@@ -889,8 +927,11 @@ def page_metas():
             if not add_monto or add_monto <= 0:
                 st.error("Ingresa un monto válido.")
             else:
-                run("UPDATE metas SET actual = MIN(actual + ?, objetivo) WHERE id = ? AND user_id = ?",
-                    (add_monto, nombres[sel_meta], uid()))
+                meta_resp = sb().table("metas").select("actual, objetivo").eq("id", int(nombres[sel_meta])).eq("user_id", uid()).execute()
+                if meta_resp.data:
+                    m = meta_resp.data[0]
+                    nuevo_actual = min(float(m["actual"]) + add_monto, float(m["objetivo"]))
+                    sb().table("metas").update({"actual": nuevo_actual}).eq("id", int(nombres[sel_meta])).eq("user_id", uid()).execute()
                 st.success(f"+{cop(add_monto)} agregado a '{sel_meta}'.")
                 st.rerun()
 
@@ -898,12 +939,13 @@ def page_metas():
         opciones = {f"{r['emoji']} {r['nombre']}": r["id"] for _, r in df.iterrows()}
         sel = st.selectbox("Selecciona", list(opciones.keys()), key="del_meta")
         if st.button("Eliminar meta", key="btn_del_meta"):
-            run("DELETE FROM metas WHERE id=? AND user_id=?", (opciones[sel], uid()))
+            sb().table("metas").delete().eq("id", int(opciones[sel])).eq("user_id", uid()).execute()
             st.rerun()
 
 
 def page_deudas():
-    df = query("SELECT * FROM deudas WHERE user_id=? ORDER BY saldo DESC", params=(uid(),))
+    resp = sb().table("deudas").select("*").eq("user_id", uid()).order("saldo", desc=True).execute()
+    df   = _df(resp)
 
     total_saldo   = df["saldo"].sum() if not df.empty else 0
     total_inicial = df["deuda_inicial"].sum() if not df.empty else 0
@@ -944,8 +986,12 @@ def page_deudas():
             elif not deuda_inicial or deuda_inicial <= 0:
                 st.error("El monto de la deuda debe ser mayor a 0.")
             else:
-                run("INSERT INTO deudas (nombre,tipo,deuda_inicial,saldo,tasa_interes,pago_minimo,fecha_inicio,user_id) VALUES (?,?,?,?,?,?,?,?)",
-                    (nombre, tipo, deuda_inicial, deuda_inicial, tasa or 0.0, pago_minimo or 0.0, str(fecha_inicio), uid()))
+                sb().table("deudas").insert({
+                    "nombre": nombre, "tipo": tipo, "deuda_inicial": deuda_inicial,
+                    "saldo": deuda_inicial, "tasa_interes": tasa or 0.0,
+                    "pago_minimo": pago_minimo or 0.0,
+                    "fecha_inicio": str(fecha_inicio), "user_id": uid()
+                }).execute()
                 st.success(f"Deuda '{nombre}' registrada.")
                 st.rerun()
 
@@ -960,8 +1006,8 @@ def page_deudas():
                               r["tasa_interes"], r["pago_minimo"], fecha_fin, total_int),
                     unsafe_allow_html=True)
 
-        pagos = query("SELECT * FROM pagos_deuda WHERE deuda_id=? ORDER BY fecha DESC LIMIT 5",
-                      params=(int(r["id"]),))
+        pagos_resp = sb().table("pagos_deuda").select("*").eq("deuda_id", int(r["id"])).order("fecha", desc=True).limit(5).execute()
+        pagos = _df(pagos_resp)
         if not pagos.empty:
             hist_html = ""
             for _, p in pagos.iterrows():
@@ -995,9 +1041,11 @@ def page_deudas():
                 st.error(f"El pago ({cop(pago_monto)}) supera el saldo ({cop(saldo_s)}).")
             else:
                 nuevo_saldo = round(saldo_s - pago_monto, 2)
-                run("INSERT INTO pagos_deuda (deuda_id,fecha,monto,nota) VALUES (?,?,?,?)",
-                    (int(did), str(pago_fecha), pago_monto, pago_nota or None))
-                run("UPDATE deudas SET saldo=? WHERE id=? AND user_id=?", (nuevo_saldo, int(did), uid()))
+                sb().table("pagos_deuda").insert({
+                    "deuda_id": int(did), "fecha": str(pago_fecha),
+                    "monto": pago_monto, "nota": pago_nota or None
+                }).execute()
+                sb().table("deudas").update({"saldo": nuevo_saldo}).eq("id", int(did)).eq("user_id", uid()).execute()
                 st.success(f"Pago de {cop(pago_monto)} registrado. Saldo: {cop(nuevo_saldo)}")
                 st.rerun()
 
@@ -1005,8 +1053,8 @@ def page_deudas():
         opciones = {r["nombre"]: r["id"] for _, r in df.iterrows()}
         sel = st.selectbox("Selecciona", list(opciones.keys()), key="del_deuda")
         if st.button("Eliminar deuda", key="btn_del_deuda"):
-            run("DELETE FROM pagos_deuda WHERE deuda_id=?", (opciones[sel],))
-            run("DELETE FROM deudas WHERE id=? AND user_id=?", (opciones[sel], uid()))
+            sb().table("pagos_deuda").delete().eq("deuda_id", int(opciones[sel])).execute()
+            sb().table("deudas").delete().eq("id", int(opciones[sel])).eq("user_id", uid()).execute()
             st.rerun()
 
 

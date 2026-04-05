@@ -19,13 +19,12 @@ CATEGORIAS_GASTO   = ["Alimentación", "Restaurantes", "Transporte", "Vivienda",
                       "Educación", "Entretenimiento", "Ropa", "Servicios", "Deudas", "Otro gasto"]
 TIPOS_ACTIVO       = ["Acciones", "Crypto", "Ahorro", "Inmuebles", "Bonos", "Otro"]
 TIPOS_DEUDA        = ["Tarjeta de crédito", "Préstamo personal", "Hipoteca", "Auto", "Estudiantil", "Otro"]
-CUENTAS            = ["Efectivo", "Cuenta bancaria", "Tarjeta de débito",
-                      "Tarjeta de crédito", "Billetera digital", "Transferencia", "Otro"]
+CUENTAS            = ["Efectivo", "Cuenta bancaria", "Tarjeta de crédito", "Billetera digital", "Otro"]
 META_EMOJIS        = ["🎯", "✈️", "🏠", "🚗", "💍", "🎓", "🏖️", "💪", "🛍️", "🌟"]
 
 CUENTA_ICONS = {
-    "Efectivo":"💵","Cuenta bancaria":"🏦","Tarjeta de débito":"💳",
-    "Tarjeta de crédito":"💳","Billetera digital":"📱","Transferencia":"🔄","Otro":"🏷️",
+    "Efectivo":"💵","Cuenta bancaria":"🏦",
+    "Tarjeta de crédito":"💳","Billetera digital":"📱","Otro":"🏷️",
 }
 CAT_ICONS = {
     "Salario":"💼","Préstamo":"🏦","Otro ingreso":"💰",

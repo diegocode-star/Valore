@@ -5,8 +5,12 @@ CREATE TABLE IF NOT EXISTS usuarios (
     id BIGSERIAL PRIMARY KEY,
     nombre TEXT NOT NULL,
     email TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL
+    password_hash TEXT NOT NULL,
+    created_at TEXT DEFAULT to_char(CURRENT_DATE, 'YYYY-MM-DD')
 );
+
+-- Migración para tablas existentes (ejecutar si la tabla ya existía):
+-- ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS created_at TEXT;
 
 CREATE TABLE IF NOT EXISTS transacciones (
     id BIGSERIAL PRIMARY KEY,

@@ -21,6 +21,7 @@ TIPOS_ACTIVO       = ["Acciones", "Crypto", "Ahorro", "Inmuebles", "Bonos", "Otr
 TIPOS_DEUDA        = ["Tarjeta de crédito", "Préstamo personal", "Hipoteca", "Auto", "Estudiantil", "Otro"]
 CUENTAS            = ["Efectivo", "Cuenta bancaria", "Tarjeta de crédito", "Billetera digital", "Otro"]
 META_EMOJIS        = ["🎯", "✈️", "🏠", "🚗", "💍", "🎓", "🏖️", "💪", "🛍️", "🌟"]
+ADMIN_EMAIL        = "diegorenba@gmail.com"
 
 CUENTA_ICONS = {
     "Efectivo":"💵","Cuenta bancaria":"🏦",
@@ -142,7 +143,8 @@ def create_user(nombre, email, password):
         sb().table("usuarios").insert({
             "nombre": nombre.strip(),
             "email": email.strip().lower(),
-            "password_hash": hash_password(password)
+            "password_hash": hash_password(password),
+            "created_at": str(date.today())
         }).execute()
         return True, None
     except Exception as e:
@@ -173,10 +175,11 @@ def restore_session():
     if uid_param:
         try:
             uid_val = int(uid_param)
-            resp = sb().table("usuarios").select("id, nombre").eq("id", uid_val).execute()
+            resp = sb().table("usuarios").select("id, nombre, email").eq("id", uid_val).execute()
             if resp.data:
-                st.session_state.user_id   = uid_val
-                st.session_state.user_name = resp.data[0]["nombre"]
+                st.session_state.user_id    = uid_val
+                st.session_state.user_name  = resp.data[0]["nombre"]
+                st.session_state.user_email = resp.data[0]["email"]
             else:
                 st.query_params.clear()
         except Exception:
@@ -566,8 +569,9 @@ def page_auth():
                 else:
                     user_id, nombre = authenticate_user(email, password)
                     if user_id:
-                        st.session_state.user_id   = user_id
-                        st.session_state.user_name = nombre
+                        st.session_state.user_id    = user_id
+                        st.session_state.user_name  = nombre
+                        st.session_state.user_email = email.strip().lower()
                         st.query_params["uid"] = user_id
                         st.rerun()
                     else:
@@ -597,8 +601,9 @@ def page_auth():
                     if success:
                         user_id, uname = authenticate_user(email, password)
                         if user_id:
-                            st.session_state.user_id   = user_id
-                            st.session_state.user_name = uname
+                            st.session_state.user_id    = user_id
+                            st.session_state.user_name  = uname
+                            st.session_state.user_email = email.strip().lower()
                             st.query_params["uid"] = user_id
                             st.rerun()
                         else:
@@ -1076,6 +1081,108 @@ def page_deudas():
             st.rerun()
 
 
+# ─── Admin Page ───────────────────────────────────────────────────────────────
+def page_admin():
+    st.markdown(f"""
+    <div style="background:linear-gradient(135deg,#322b49,#221e32);border-radius:20px;
+                padding:1.4rem 1.6rem;margin-bottom:16px;">
+      <p style="color:rgba(255,255,255,0.5);font-size:10px;text-transform:uppercase;
+                letter-spacing:1.2px;margin:0 0 4px;font-weight:600;">Panel privado</p>
+      <p style="color:#eab000;font-size:1.5rem;font-weight:800;margin:0;letter-spacing:-0.5px;">
+        Administración ◆</p>
+    </div>""", unsafe_allow_html=True)
+
+    # ── Usuarios ──────────────────────────────────────────────────────────────
+    resp_u = sb().table("usuarios").select("id, nombre, email, created_at").order("id").execute()
+    usuarios_df = _df(resp_u)
+    total_u = len(usuarios_df)
+
+    st.markdown(section_title("Usuarios"), unsafe_allow_html=True)
+    st.markdown(card_wrap(f"""
+      <p style="color:#5c5474;font-size:11px;text-transform:uppercase;letter-spacing:1px;
+                margin:0 0 6px;font-weight:600;">Total registrados</p>
+      <p style="color:#322b49;font-size:2.8rem;font-weight:800;margin:0;letter-spacing:-1.5px;
+                line-height:1;">{total_u}</p>
+      <p style="color:#6b6285;font-size:12px;margin:4px 0 0;">usuarios en la plataforma</p>
+    """), unsafe_allow_html=True)
+
+    if not usuarios_df.empty:
+        rows_html = ""
+        for _, r in usuarios_df.iterrows():
+            fecha = r.get("created_at") or "—"
+            rows_html += f"""
+            <div style="display:flex;align-items:center;padding:10px 0;
+                        border-bottom:1px solid rgba(0,0,0,0.05);">
+              <div style="width:38px;height:38px;border-radius:12px;background:#F5F0E8;
+                          display:flex;align-items:center;justify-content:center;
+                          font-size:16px;margin-right:12px;flex-shrink:0;">👤</div>
+              <div style="flex:1;min-width:0;">
+                <p style="color:#1c1829;font-size:13px;font-weight:600;margin:0;
+                           overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{r['nombre']}</p>
+                <p style="color:#6b6285;font-size:11px;margin:2px 0 0;
+                           overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{r['email']}</p>
+              </div>
+              <p style="color:#b78a00;font-size:11px;font-weight:600;margin:0;
+                        flex-shrink:0;padding-left:8px;">{fecha}</p>
+            </div>"""
+        st.markdown(card_wrap(rows_html, "0.6rem 1.2rem"), unsafe_allow_html=True)
+
+    # ── Actividad ─────────────────────────────────────────────────────────────
+    st.markdown(section_title("Actividad global"), unsafe_allow_html=True)
+
+    resp_tx   = sb().table("transacciones").select("id").execute()
+    resp_mt   = sb().table("metas").select("id").execute()
+    resp_deu  = sb().table("deudas").select("id").execute()
+    total_tx  = len(resp_tx.data)  if resp_tx.data  else 0
+    total_mt  = len(resp_mt.data)  if resp_mt.data  else 0
+    total_deu = len(resp_deu.data) if resp_deu.data else 0
+
+    def metric_card(label, value, icon):
+        return card_wrap(f"""
+          <p style="font-size:22px;margin:0 0 8px;">{icon}</p>
+          <p style="color:#5c5474;font-size:10px;text-transform:uppercase;letter-spacing:0.8px;
+                    margin:0 0 4px;font-weight:600;">{label}</p>
+          <p style="color:#322b49;font-size:1.8rem;font-weight:800;margin:0;
+                    letter-spacing:-1px;line-height:1;">{value}</p>
+        """, padding="1rem 1.2rem")
+
+    c1, c2, c3 = st.columns(3)
+    with c1: st.markdown(metric_card("Transacciones", total_tx, "💸"), unsafe_allow_html=True)
+    with c2: st.markdown(metric_card("Metas", total_mt, "🎯"), unsafe_allow_html=True)
+    with c3: st.markdown(metric_card("Deudas", total_deu, "💳"), unsafe_allow_html=True)
+
+    # ── Crecimiento ───────────────────────────────────────────────────────────
+    st.markdown(section_title("Crecimiento de usuarios"), unsafe_allow_html=True)
+
+    if not usuarios_df.empty and "created_at" in usuarios_df.columns:
+        df_g = usuarios_df[usuarios_df["created_at"].notna()].copy()
+        if not df_g.empty:
+            df_g = df_g.groupby("created_at").size().reset_index(name="nuevos")
+            df_g = df_g.sort_values("created_at")
+            fig = go.Figure(go.Bar(
+                x=df_g["created_at"], y=df_g["nuevos"],
+                marker=dict(color="#b78a00", line=dict(width=0)),
+                hovertemplate="<b>%{x}</b><br>%{y} usuario(s)<extra></extra>",
+                text=df_g["nuevos"], textposition="outside",
+                textfont=dict(color="#322b49", size=11),
+            ))
+            fig.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#322b49"),
+                margin=dict(l=0, r=0, t=10, b=0), height=220,
+                xaxis=dict(color="#322b49", tickfont=dict(color="#322b49", size=11),
+                           gridcolor="rgba(0,0,0,0)"),
+                yaxis=dict(color="#322b49", tickfont=dict(color="#322b49"),
+                           gridcolor="rgba(50,43,73,0.06)", dtick=1),
+                showlegend=False,
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.info("Aún no hay datos de fecha de registro para graficar.")
+    else:
+        st.info("Ejecuta la migración de `created_at` en el SQL Editor de Supabase para ver esta gráfica.")
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 init_db()
 st.set_page_config(page_title="Valore", page_icon="static/icon.png", layout="centered",
@@ -1129,11 +1236,16 @@ else:
 
     st.markdown("<div style='margin-bottom:1rem;'></div>", unsafe_allow_html=True)
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
-        ["Dashboard", "Transacciones", "Portafolio", "Metas", "Deudas"]
-    )
-    with tab1: page_dashboard()
-    with tab2: page_transacciones()
-    with tab3: page_portafolio()
-    with tab4: page_metas()
-    with tab5: page_deudas()
+    is_admin = st.session_state.get("user_email", "").lower() == ADMIN_EMAIL
+    tab_names = ["Dashboard", "Transacciones", "Portafolio", "Metas", "Deudas"]
+    if is_admin:
+        tab_names.append("Admin")
+
+    tabs = st.tabs(tab_names)
+    with tabs[0]: page_dashboard()
+    with tabs[1]: page_transacciones()
+    with tabs[2]: page_portafolio()
+    with tabs[3]: page_metas()
+    with tabs[4]: page_deudas()
+    if is_admin:
+        with tabs[5]: page_admin()

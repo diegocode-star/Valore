@@ -14,9 +14,9 @@ except ImportError:
 from supabase import create_client
 
 # ─── Constants ────────────────────────────────────────────────────────────────
-CATEGORIAS_INGRESO = ["Salario", "Préstamo", "Otro"]
-CATEGORIAS_GASTO   = ["Alimentación", "Transporte", "Vivienda", "Salud", "Educación",
-                      "Entretenimiento", "Ropa", "Servicios", "Deudas", "Otro gasto"]
+CATEGORIAS_INGRESO = ["Salario", "Préstamo", "Otro ingreso"]
+CATEGORIAS_GASTO   = ["Alimentación", "Restaurantes", "Transporte", "Vivienda", "Salud",
+                      "Educación", "Entretenimiento", "Ropa", "Servicios", "Deudas", "Otro gasto"]
 TIPOS_ACTIVO       = ["Acciones", "Crypto", "Ahorro", "Inmuebles", "Bonos", "Otro"]
 TIPOS_DEUDA        = ["Tarjeta de crédito", "Préstamo personal", "Hipoteca", "Auto", "Estudiantil", "Otro"]
 CUENTAS            = ["Efectivo", "Cuenta bancaria", "Tarjeta de débito",
@@ -28,8 +28,8 @@ CUENTA_ICONS = {
     "Tarjeta de crédito":"💳","Billetera digital":"📱","Transferencia":"🔄","Otro":"🏷️",
 }
 CAT_ICONS = {
-    "Salario":"💼","Préstamo":"🏦","Otro":"💰",
-    "Alimentación":"🛒","Transporte":"🚗","Vivienda":"🏠","Salud":"💊","Educación":"📚",
+    "Salario":"💼","Préstamo":"🏦","Otro ingreso":"💰",
+    "Alimentación":"🛒","Restaurantes":"🍽️","Transporte":"🚗","Vivienda":"🏠","Salud":"💊","Educación":"📚",
     "Entretenimiento":"🎬","Ropa":"👗","Servicios":"⚡","Deudas":"💳","Otro gasto":"📦",
     "Acciones":"📊","Crypto":"₿","Ahorro":"🏦","Inmuebles":"🏡","Bonos":"📜","Otro":"💎",
 }
@@ -42,9 +42,9 @@ CHART_COLORS = ["#b78a00","#4A7C59","#2D6A8F","#8B5E3C","#7B6EA0",
 
 # Colores fijos por categoría — garantiza consistencia entre gráficas
 _CATS_ORDERED = [
-    "Alimentación","Transporte","Vivienda","Salud","Educación",
+    "Alimentación","Restaurantes","Transporte","Vivienda","Salud","Educación",
     "Entretenimiento","Ropa","Servicios","Deudas","Otro gasto",
-    "Salario","Préstamo","Otro",
+    "Salario","Préstamo","Otro ingreso",
 ]
 CAT_COLOR_MAP = {cat: CHART_COLORS[i % len(CHART_COLORS)] for i, cat in enumerate(_CATS_ORDERED)}
 
@@ -165,6 +165,23 @@ def email_exists(email):
 
 def reset_password(email, new_password):
     sb().table("usuarios").update({"password_hash": hash_password(new_password)}).eq("email", email.strip().lower()).execute()
+
+def restore_session():
+    """Restaura la sesión desde query_params si el usuario recargó la página."""
+    if st.session_state.get("user_id"):
+        return
+    uid_param = st.query_params.get("uid")
+    if uid_param:
+        try:
+            uid_val = int(uid_param)
+            resp = sb().table("usuarios").select("id, nombre").eq("id", uid_val).execute()
+            if resp.data:
+                st.session_state.user_id   = uid_val
+                st.session_state.user_name = resp.data[0]["nombre"]
+            else:
+                st.query_params.clear()
+        except Exception:
+            st.query_params.clear()
 
 def uid():
     return st.session_state.get("user_id", 1)
@@ -552,6 +569,7 @@ def page_auth():
                     if user_id:
                         st.session_state.user_id   = user_id
                         st.session_state.user_name = nombre
+                        st.query_params["uid"] = user_id
                         st.rerun()
                     else:
                         if email_exists(email):
@@ -582,6 +600,7 @@ def page_auth():
                         if user_id:
                             st.session_state.user_id   = user_id
                             st.session_state.user_name = uname
+                            st.query_params["uid"] = user_id
                             st.rerun()
                         else:
                             st.error("Cuenta creada. Por favor inicia sesión.")
@@ -654,27 +673,27 @@ def page_transacciones():
             fecha = st.date_input("Fecha", value=date.today())
         with c2:
             categoria = st.selectbox("Categoría", cats)
-        cat_custom = ""
-        if categoria == "Otro":
-            cat_custom = st.text_input("Especifica el tipo de ingreso", placeholder="Ej: Bono, Reembolso…")
         cuenta_label = "Cuenta de destino" if tipo == "Ingreso" else "Cuenta de origen"
         cuenta = st.selectbox(cuenta_label, CUENTAS)
-        descripcion = st.text_input("Descripción", placeholder="Opcional…")
+        desc_obligatorio = (categoria == "Otro ingreso")
+        desc_label = "Descripción *" if desc_obligatorio else "Descripción"
+        desc_placeholder = "Obligatorio — describe el ingreso…" if desc_obligatorio else "Opcional…"
+        descripcion = st.text_input(desc_label, placeholder=desc_placeholder)
         monto = st.number_input("Monto ($)", min_value=0.0, value=None,
                                 placeholder="0", step=1000.0, format="%.0f")
         ok = st.form_submit_button("Guardar transacción", use_container_width=True)
         if ok:
-            cat_final = cat_custom.strip() if (categoria == "Otro" and cat_custom.strip()) else categoria
-            if categoria == "Otro" and not cat_custom.strip():
-                st.error("Especifica el tipo de ingreso.")
+            if desc_obligatorio and not descripcion.strip():
+                st.error("La descripción es obligatoria para 'Otro ingreso'.")
             elif not monto or monto <= 0:
                 st.error("El monto debe ser mayor a 0.")
             else:
                 sb().table("transacciones").insert({
-                    "fecha": str(fecha), "tipo": tipo, "categoria": cat_final,
+                    "fecha": str(fecha), "tipo": tipo, "categoria": categoria,
                     "descripcion": descripcion, "monto": monto, "cuenta": cuenta, "user_id": uid()
                 }).execute()
                 st.success(f"{'Ingreso' if tipo=='Ingreso' else 'Gasto'} de {cop(monto)} guardado.")
+                st.rerun()
 
     resp = sb().table("transacciones").select("*").eq("user_id", uid()).order("fecha", desc=True).order("id", desc=True).execute()
     df = _df(resp)
@@ -1071,6 +1090,8 @@ st.markdown("""
 <meta name="theme-color" content="#322b49">
 """, unsafe_allow_html=True)
 
+restore_session()
+
 if not st.session_state.get("user_id"):
     page_auth()
 else:
@@ -1089,6 +1110,7 @@ else:
         if st.button("Salir", key="logout"):
             del st.session_state["user_id"]
             del st.session_state["user_name"]
+            st.query_params.clear()
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 

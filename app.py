@@ -1082,12 +1082,25 @@ st.set_page_config(page_title="Valore", page_icon="static/icon.png", layout="cen
                    initial_sidebar_state="collapsed")
 st.markdown(f"<style>{CSS}</style>", unsafe_allow_html=True)
 st.markdown("""
-<link rel="manifest" href="/static/manifest.json">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Valore">
-<link rel="apple-touch-icon" href="/static/icon.png">
-<meta name="theme-color" content="#322b49">
+<script>
+(function(){
+  var h = document.head;
+  function meta(n, c) {
+    var el = document.createElement('meta'); el.name = n; el.content = c; h.appendChild(el);
+  }
+  function link(r, href, extra) {
+    var el = document.createElement('link'); el.rel = r; el.href = href;
+    if (extra) Object.assign(el, extra);
+    h.appendChild(el);
+  }
+  link('manifest', '/app/static/manifest.json');
+  link('apple-touch-icon', '/app/static/icon.png');
+  meta('apple-mobile-web-app-capable', 'yes');
+  meta('apple-mobile-web-app-status-bar-style', 'black-translucent');
+  meta('apple-mobile-web-app-title', 'Valore');
+  meta('theme-color', '#322b49');
+})();
+</script>
 """, unsafe_allow_html=True)
 
 restore_session()

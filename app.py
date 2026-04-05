@@ -1082,10 +1082,11 @@ st.set_page_config(page_title="Valore", page_icon="static/icon.png", layout="cen
                    initial_sidebar_state="collapsed")
 st.markdown(f"<style>{CSS}</style>", unsafe_allow_html=True)
 st.markdown("""
-<link rel="apple-touch-icon" href="app/static/icon.png">
+<link rel="manifest" href="/static/manifest.json">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Valore">
+<link rel="apple-touch-icon" href="/static/icon.png">
 <meta name="theme-color" content="#322b49">
 """, unsafe_allow_html=True)
 

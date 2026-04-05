@@ -143,8 +143,7 @@ def create_user(nombre, email, password):
         sb().table("usuarios").insert({
             "nombre": nombre.strip(),
             "email": email.strip().lower(),
-            "password_hash": hash_password(password),
-            "created_at": str(date.today())
+            "password_hash": hash_password(password)
         }).execute()
         return True, None
     except Exception as e:
@@ -1093,7 +1092,7 @@ def page_admin():
     </div>""", unsafe_allow_html=True)
 
     # ── Usuarios ──────────────────────────────────────────────────────────────
-    resp_u = sb().table("usuarios").select("id, nombre, email, created_at").order("id").execute()
+    resp_u = sb().table("usuarios").select("id, nombre, email").order("id").execute()
     usuarios_df = _df(resp_u)
     total_u = len(usuarios_df)
 
@@ -1109,7 +1108,6 @@ def page_admin():
     if not usuarios_df.empty:
         rows_html = ""
         for _, r in usuarios_df.iterrows():
-            fecha = r.get("created_at") or "—"
             rows_html += f"""
             <div style="display:flex;align-items:center;padding:10px 0;
                         border-bottom:1px solid rgba(0,0,0,0.05);">
@@ -1123,7 +1121,7 @@ def page_admin():
                            overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{r['email']}</p>
               </div>
               <p style="color:#b78a00;font-size:11px;font-weight:600;margin:0;
-                        flex-shrink:0;padding-left:8px;">{fecha}</p>
+                        flex-shrink:0;padding-left:8px;">#{int(r['id'])}</p>
             </div>"""
         st.markdown(card_wrap(rows_html, "0.6rem 1.2rem"), unsafe_allow_html=True)
 
@@ -1154,33 +1152,7 @@ def page_admin():
     # ── Crecimiento ───────────────────────────────────────────────────────────
     st.markdown(section_title("Crecimiento de usuarios"), unsafe_allow_html=True)
 
-    if not usuarios_df.empty and "created_at" in usuarios_df.columns:
-        df_g = usuarios_df[usuarios_df["created_at"].notna()].copy()
-        if not df_g.empty:
-            df_g = df_g.groupby("created_at").size().reset_index(name="nuevos")
-            df_g = df_g.sort_values("created_at")
-            fig = go.Figure(go.Bar(
-                x=df_g["created_at"], y=df_g["nuevos"],
-                marker=dict(color="#b78a00", line=dict(width=0)),
-                hovertemplate="<b>%{x}</b><br>%{y} usuario(s)<extra></extra>",
-                text=df_g["nuevos"], textposition="outside",
-                textfont=dict(color="#322b49", size=11),
-            ))
-            fig.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#322b49"),
-                margin=dict(l=0, r=0, t=10, b=0), height=220,
-                xaxis=dict(color="#322b49", tickfont=dict(color="#322b49", size=11),
-                           gridcolor="rgba(0,0,0,0)"),
-                yaxis=dict(color="#322b49", tickfont=dict(color="#322b49"),
-                           gridcolor="rgba(50,43,73,0.06)", dtick=1),
-                showlegend=False,
-            )
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        else:
-            st.info("Aún no hay datos de fecha de registro para graficar.")
-    else:
-        st.info("Ejecuta la migración de `created_at` en el SQL Editor de Supabase para ver esta gráfica.")
+    st.info("La gráfica de crecimiento estará disponible una vez que se agregue la columna `created_at` a la tabla `usuarios`.")
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────

@@ -15,14 +15,19 @@ except ImportError:
 from supabase import create_client
 
 # ─── Constants ────────────────────────────────────────────────────────────────
-CATEGORIAS_INGRESO = ["Salario", "Préstamo", "Otro ingreso"]
+CATEGORIAS_INGRESO = ["Salario", "Préstamo", "Retiro de portafolio", "Otro ingreso"]
 CATEGORIAS_GASTO   = ["Alimentación", "Restaurantes", "Transporte", "Vivienda", "Salud",
                       "Educación", "Entretenimiento", "Ropa", "Servicios", "Deudas", "Portafolio", "Otro gasto"]
 TIPOS_ACTIVO       = ["Acciones", "Crypto", "Ahorro", "Inmuebles", "Bonos", "Otro"]
 TIPOS_DEUDA        = ["Tarjeta de crédito", "Préstamo personal", "Hipoteca", "Auto", "Estudiantil", "Otro"]
 CUENTAS            = ["Efectivo", "Cuenta bancaria", "Tarjeta de crédito", "Billetera digital", "Otro"]
+TIPOS_CUENTA       = ["Cuenta bancaria", "Billetera digital", "Efectivo", "Inversiones", "Otro"]
 META_EMOJIS        = ["🎯", "✈️", "🏠", "🚗", "💍", "🎓", "🏖️", "💪", "🛍️", "🌟"]
 ADMIN_EMAIL        = "diegorenba@gmail.com"
+
+MONEDAS         = ["COP", "USD", "EUR", "GBP", "JPY"]
+MONEDA_SIMBOLO  = {"COP": "$", "USD": "US$", "EUR": "€", "GBP": "£", "JPY": "¥"}
+TASA_A_COP      = {"COP": 1, "USD": 4_100, "EUR": 4_450, "GBP": 5_200, "JPY": 27}
 
 CUENTA_ICONS = {
     "Efectivo":"💵","Cuenta bancaria":"🏦",
@@ -32,6 +37,7 @@ CAT_ICONS = {
     "Salario":"💼","Préstamo":"🏦","Otro ingreso":"💰",
     "Alimentación":"🛒","Restaurantes":"🍽️","Transporte":"🚗","Vivienda":"🏠","Salud":"💊","Educación":"📚",
     "Entretenimiento":"🎬","Ropa":"👗","Servicios":"⚡","Deudas":"💳","Portafolio":"📈","Otro gasto":"📦",
+    "Retiro de portafolio":"📉",
     "Acciones":"📊","Crypto":"₿","Ahorro":"🏦","Inmuebles":"🏡","Bonos":"📜","Otro":"💎",
 }
 DEUDA_ICONS = {
@@ -63,7 +69,7 @@ def get_supabase():
         url = os.getenv("SUPABASE_URL", "")
         key = os.getenv("SUPABASE_KEY", "")
     if not url or not key:
-        st.error("Configura SUPABASE_URL y SUPABASE_KEY en los secrets de Streamlit o en el archivo .env")
+        st.warning("⚙️ Configura SUPABASE_URL y SUPABASE_KEY en los secrets de Streamlit o en el archivo .env para continuar.")
         st.stop()
     return create_client(url, key)
 
@@ -82,11 +88,21 @@ CREATE TABLE IF NOT EXISTS usuarios (
     email TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS cuentas (
+    id BIGSERIAL PRIMARY KEY,
+    nombre TEXT NOT NULL, tipo TEXT NOT NULL,
+    moneda TEXT NOT NULL DEFAULT 'COP',
+    saldo_inicial DOUBLE PRECISION NOT NULL DEFAULT 0,
+    user_id BIGINT NOT NULL DEFAULT 1
+);
 CREATE TABLE IF NOT EXISTS transacciones (
     id BIGSERIAL PRIMARY KEY,
     fecha TEXT NOT NULL, tipo TEXT NOT NULL, categoria TEXT NOT NULL,
     descripcion TEXT, monto DOUBLE PRECISION NOT NULL,
-    cuenta TEXT DEFAULT 'Efectivo', user_id BIGINT NOT NULL DEFAULT 1
+    cuenta TEXT DEFAULT 'Efectivo',
+    moneda TEXT DEFAULT 'COP',
+    cuenta_id BIGINT,
+    user_id BIGINT NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS portafolio (
     id BIGSERIAL PRIMARY KEY,
@@ -116,6 +132,25 @@ CREATE TABLE IF NOT EXISTS metas (
 );
 """
 
+_MIGRATION_SQL = """-- Migraciones para versión actual (ejecuta una sola vez en el SQL Editor de Supabase):
+ALTER TABLE transacciones ADD COLUMN IF NOT EXISTS moneda TEXT DEFAULT 'COP';
+ALTER TABLE transacciones ADD COLUMN IF NOT EXISTS cuenta_id BIGINT;
+CREATE TABLE IF NOT EXISTS cuentas (
+    id BIGSERIAL PRIMARY KEY,
+    nombre TEXT NOT NULL, tipo TEXT NOT NULL,
+    moneda TEXT NOT NULL DEFAULT 'COP',
+    saldo_inicial DOUBLE PRECISION NOT NULL DEFAULT 0,
+    user_id BIGINT NOT NULL DEFAULT 1
+);"""
+
+def _has_column(table, column):
+    """Detecta si una columna existe leyendo una fila y viendo las claves."""
+    try:
+        r = sb().table(table).select(column).limit(1).execute()
+        return True
+    except Exception:
+        return False
+
 def init_db():
     """Verifica la conexión con Supabase y que las tablas existan."""
     try:
@@ -123,17 +158,19 @@ def init_db():
     except Exception as e:
         err = str(e)
         if "PGRST205" in err or "schema cache" in err:
-            st.error("Las tablas de Supabase no existen todavía.")
-            st.markdown("""
-**Paso único de configuración:**
-1. Abre el [SQL Editor de Supabase](https://supabase.com/dashboard/project/vyhlfosmnbetiohtcxbp/sql/new)
-2. Pega y ejecuta el SQL que aparece abajo
-3. Recarga esta página
-""")
+            st.warning("⚠️ Las tablas de Supabase no existen todavía.")
+            st.markdown("**Paso único de configuración:** Abre el SQL Editor de Supabase, pega y ejecuta el SQL de abajo, luego recarga la página.")
             st.code(_SCHEMA_SQL, language="sql")
         else:
-            st.error(f"No se pudo conectar a Supabase: {e}")
+            st.warning("Hubo un problema al conectar con la base de datos. Intenta de nuevo en un momento.")
         st.stop()
+
+    # Mostrar aviso de migración si faltan columnas nuevas
+    if not _has_column("transacciones", "moneda"):
+        with st.sidebar:
+            st.warning("🔧 **Actualización pendiente**")
+            st.markdown("Ejecuta este SQL en el [Editor de Supabase](https://supabase.com/dashboard/project/vyhlfosmnbetiohtcxbp/sql/new) para activar multi-moneda y cuentas:")
+            st.code(_MIGRATION_SQL, language="sql")
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 def hash_password(password):
@@ -526,13 +563,13 @@ def page_auth():
             ok = st.form_submit_button("Guardar nueva contraseña", use_container_width=True)
             if ok:
                 if not email or not new_pass or not confirm:
-                    st.error("Completa todos los campos.")
+                    st.warning("Por favor completa todos los campos.")
                 elif not email_exists(email):
-                    st.error("No encontramos una cuenta con ese email.")
+                    st.warning("No encontramos una cuenta con ese email. Verifica que esté bien escrito.")
                 elif len(new_pass) < 6:
-                    st.error("La contraseña debe tener al menos 6 caracteres.")
+                    st.warning("La contraseña debe tener al menos 6 caracteres.")
                 elif new_pass != confirm:
-                    st.error("Las contraseñas no coinciden.")
+                    st.warning("Las contraseñas no coinciden. Intenta de nuevo.")
                 else:
                     reset_password(email, new_pass)
                     st.success("Contraseña actualizada. Ya puedes iniciar sesión.")
@@ -563,7 +600,7 @@ def page_auth():
             ok = st.form_submit_button("Iniciar sesión", use_container_width=True)
             if ok:
                 if not email or not password:
-                    st.error("Completa todos los campos.")
+                    st.warning("Por favor completa todos los campos.")
                 else:
                     user_id, nombre = authenticate_user(email, password)
                     if user_id:
@@ -573,9 +610,9 @@ def page_auth():
                         st.rerun()
                     else:
                         if email_exists(email):
-                            st.error("Contraseña incorrecta.")
+                            st.warning("Contraseña incorrecta. Intenta de nuevo o recupera tu contraseña.")
                         else:
-                            st.error("No encontramos una cuenta con ese email.")
+                            st.warning("No encontramos una cuenta con ese email. ¿Ya te registraste?")
         _, col_mid, _ = st.columns([1, 2, 1])
         with col_mid:
             if st.button("¿Olvidaste tu contraseña?", key="go_reset", use_container_width=True):
@@ -590,9 +627,9 @@ def page_auth():
             ok = st.form_submit_button("Crear cuenta", use_container_width=True)
             if ok:
                 if not nombre or not email or not password:
-                    st.error("Completa todos los campos.")
+                    st.warning("Por favor completa todos los campos.")
                 elif len(password) < 6:
-                    st.error("La contraseña debe tener al menos 6 caracteres.")
+                    st.warning("La contraseña debe tener al menos 6 caracteres.")
                 else:
                     success, err = create_user(nombre, email, password)
                     if success:
@@ -603,11 +640,11 @@ def page_auth():
                             st.session_state.user_email = email.strip().lower()
                             st.rerun()
                         else:
-                            st.error("Cuenta creada. Por favor inicia sesión.")
+                            st.success("¡Cuenta creada! Por favor inicia sesión.")
                             st.session_state.auth_mode = "login"
                             st.rerun()
                     else:
-                        st.error(err)
+                        st.warning(err)
 
 # ─── Consil.ia ────────────────────────────────────────────────────────────────
 def _get_anthropic_key():
@@ -695,7 +732,7 @@ Reglas:
 
     api_key = _get_anthropic_key()
     if not api_key:
-        st.error("Falta ANTHROPIC_API_KEY. Agrégala en Streamlit Cloud → Settings → Secrets.")
+        st.warning("🔑 Falta la clave de Consil.ia. Agrégala en Streamlit Cloud → Settings → Secrets como ANTHROPIC_API_KEY.")
         return
 
     if btn_analizar:
@@ -721,11 +758,11 @@ Reglas:
         respuesta = response.content[0].text
         st.markdown(consilia_response_card(respuesta), unsafe_allow_html=True)
     except anthropic.AuthenticationError:
-        st.error("API key de Anthropic inválida. Verifica tu configuración.")
+        st.warning("La API key de Anthropic no es válida. Verifica tu configuración en Secrets.")
     except anthropic.RateLimitError:
-        st.error("Límite de uso de la API alcanzado. Intenta en unos minutos.")
-    except Exception as e:
-        st.error(f"Error al contactar Consil.ia: {e}")
+        st.warning("Consil.ia está muy ocupada ahora mismo. Intenta de nuevo en unos minutos ⏳")
+    except Exception:
+        st.warning("Hubo un problema al conectar con Consil.ia. Intenta de nuevo en un momento.")
 
 
 # ─── Pages ────────────────────────────────────────────────────────────────────
@@ -740,23 +777,33 @@ def page_dashboard():
         ), unsafe_allow_html=True)
         return
 
-    ingresos = df[df["tipo"] == "Ingreso"]["monto"].sum()
-    gastos   = df[df["tipo"] == "Gasto"]["monto"].sum()
+    # Conversión a COP si hay múltiples monedas
+    def monto_cop(row):
+        m = row.get("moneda") or "COP"
+        return float(row["monto"]) * TASA_A_COP.get(m, 1)
+
+    df["monto_cop"] = df.apply(monto_cop, axis=1)
+    multi_moneda = "moneda" in df.columns and df["moneda"].notna().any() and df["moneda"].nunique() > 1
+
+    ingresos = df[df["tipo"] == "Ingreso"]["monto_cop"].sum()
+    gastos   = df[df["tipo"] == "Gasto"]["monto_cop"].sum()
     balance  = ingresos - gastos
 
     st.markdown(balance_card_html(balance, ingresos, gastos), unsafe_allow_html=True)
+    if multi_moneda:
+        st.markdown('<p style="color:#b78a00;font-size:11px;text-align:center;margin:-8px 0 8px;">Totales convertidos a COP (tasas aproximadas)</p>', unsafe_allow_html=True)
 
     mes_actual = date.today().strftime("%Y-%m")
     df_mes = df[(df["tipo"] == "Gasto") & (df["fecha"].str.startswith(mes_actual))]
     if not df_mes.empty:
         st.markdown(section_title(f"Gastos de {date.today().strftime('%B %Y')}"), unsafe_allow_html=True)
-        df_cat_mes = df_mes.groupby("categoria")["monto"].sum().sort_values(ascending=True).reset_index()
+        df_cat_mes = df_mes.groupby("categoria")["monto_cop"].sum().sort_values(ascending=True).reset_index()
         fig_bar = go.Figure(go.Bar(
-            x=df_cat_mes["monto"],
+            x=df_cat_mes["monto_cop"],
             y=df_cat_mes["categoria"],
             orientation="h",
             marker=dict(color=cat_colors(df_cat_mes["categoria"]), line=dict(width=0)),
-            text=[cop(v) for v in df_cat_mes["monto"]],
+            text=[cop(v) for v in df_cat_mes["monto_cop"]],
             textposition="outside",
             textfont=dict(color="#322b49", size=11),
             hovertemplate="<b>%{y}</b><br>%{text}<extra></extra>",
@@ -781,63 +828,176 @@ def page_dashboard():
     st.markdown(card_wrap(rows_html, "0.6rem 1.2rem"), unsafe_allow_html=True)
 
 
+def _load_activos():
+    r = sb().table("portafolio").select("id, nombre, cantidad").eq("user_id", uid()).order("nombre").execute()
+    return {a["nombre"]: a for a in r.data} if r.data else {}
+
+def _load_cuentas_usuario():
+    """Devuelve dict {label: {id, nombre, tipo, moneda}} o {} si no hay cuentas definidas."""
+    try:
+        r = sb().table("cuentas").select("*").eq("user_id", uid()).order("nombre").execute()
+        if r.data:
+            return {f"{c['nombre']} ({c['tipo']})": c for c in r.data}
+    except Exception:
+        pass
+    return {}
+
 def page_transacciones():
+    # ── Sección "Mis Cuentas" ──────────────────────────────────────────────
+    st.markdown(section_title("Mis cuentas"), unsafe_allow_html=True)
+    cuentas_usuario = _load_cuentas_usuario()
+
+    if cuentas_usuario:
+        # Calcular balance por cuenta
+        tx_resp = sb().table("transacciones").select("tipo, monto, cuenta_id, moneda").eq("user_id", uid()).execute()
+        tx_all  = tx_resp.data or []
+        rows_html = ""
+        for label, c in cuentas_usuario.items():
+            cid = int(c["id"])
+            movs = [t for t in tx_all if t.get("cuenta_id") == cid]
+            tasa = TASA_A_COP.get(c.get("moneda", "COP"), 1)
+            ing  = sum(float(t["monto"]) for t in movs if t["tipo"] == "Ingreso")
+            gas  = sum(float(t["monto"]) for t in movs if t["tipo"] == "Gasto")
+            saldo = float(c.get("saldo_inicial", 0)) + ing - gas
+            mon   = c.get("moneda", "COP")
+            sim   = MONEDA_SIMBOLO.get(mon, "$")
+            color = "#4A7C59" if saldo >= 0 else "#C0392B"
+            tipo_ico = {"Cuenta bancaria":"🏦","Billetera digital":"📱","Efectivo":"💵","Inversiones":"📊","Otro":"🏷️"}.get(c["tipo"], "🏷️")
+            rows_html += f"""
+            <div style="display:flex;align-items:center;padding:10px 0;border-bottom:1px solid rgba(0,0,0,0.04);">
+              <span style="font-size:20px;margin-right:12px;">{tipo_ico}</span>
+              <div style="flex:1;">
+                <p style="color:#1c1829;font-size:13px;font-weight:500;margin:0;">{c['nombre']}</p>
+                <p style="color:#6b6285;font-size:11px;margin:2px 0 0;">{c['tipo']} · {mon}</p>
+              </div>
+              <p style="color:{color};font-size:14px;font-weight:600;margin:0;">{sim} {abs(saldo):,.0f}</p>
+            </div>"""
+        st.markdown(card_wrap(rows_html, "0.6rem 1.2rem"), unsafe_allow_html=True)
+    else:
+        st.markdown(card_wrap('<p style="color:#6b6285;font-size:13px;text-align:center;padding:0.5rem 0;margin:0;">Aún no tienes cuentas. Agrégalas abajo 👇</p>'), unsafe_allow_html=True)
+
+    with st.expander("➕ Agregar cuenta"):
+        with st.form("form_cuenta", clear_on_submit=True):
+            nc1, nc2 = st.columns(2)
+            with nc1:
+                c_nombre = st.text_input("Nombre", placeholder="Bancolombia, Nequi…")
+                c_tipo   = st.selectbox("Tipo", TIPOS_CUENTA)
+            with nc2:
+                c_moneda  = st.selectbox("Moneda", MONEDAS)
+                c_saldo_i = st.number_input("Saldo inicial ($)", min_value=0.0, value=None,
+                                             placeholder="0", step=10000.0, format="%.0f")
+            if st.form_submit_button("Guardar cuenta", use_container_width=True):
+                if not c_nombre:
+                    st.warning("Escribe un nombre para la cuenta.")
+                else:
+                    try:
+                        sb().table("cuentas").insert({
+                            "nombre": c_nombre, "tipo": c_tipo,
+                            "moneda": c_moneda, "saldo_inicial": c_saldo_i or 0.0,
+                            "user_id": uid()
+                        }).execute()
+                        st.rerun()
+                    except Exception:
+                        st.warning("Hubo un problema al guardar la cuenta. Intenta de nuevo.")
+
+    # ── Formulario de nueva transacción ───────────────────────────────────
     st.markdown(section_title("Nueva transacción"), unsafe_allow_html=True)
     tipo      = st.selectbox("Tipo", ["Gasto", "Ingreso"], key="new_tipo")
     cats      = CATEGORIAS_GASTO if tipo == "Gasto" else CATEGORIAS_INGRESO
     categoria = st.selectbox("Categoría", cats, key="new_cat")
+    moneda    = st.selectbox("Moneda", MONEDAS, key="new_moneda")
 
-    # ── Selector de activo cuando categoría = Portafolio ──────────────────
-    activos_dict = {}
-    if tipo == "Gasto" and categoria == "Portafolio":
-        resp_act = sb().table("portafolio").select("id, nombre, cantidad").eq("user_id", uid()).order("nombre").execute()
-        if resp_act.data:
-            activos_dict = {a["nombre"]: a for a in resp_act.data}
+    # ── Selector de activo: Portafolio (gasto) o Retiro de portafolio (ingreso)
+    activos_dict    = {}
+    needs_activo    = (tipo == "Gasto" and categoria == "Portafolio") or \
+                      (tipo == "Ingreso" and categoria == "Retiro de portafolio")
+    if needs_activo:
+        activos_dict = _load_activos()
         if activos_dict:
             st.selectbox("Activo del portafolio", list(activos_dict.keys()), key="new_activo")
         else:
-            st.info("No tienes activos en tu portafolio. Agrégalos en la pestaña Portafolio.")
+            st.info("Primero agrega activos en tu portafolio para poder asignarles transacciones 📈")
 
     with st.form("form_tx", clear_on_submit=True):
         c1, c2 = st.columns(2)
         with c1:
             fecha = st.date_input("Fecha", value=date.today())
         with c2:
+            # Cuentas: usar las del usuario si las hay, sino la lista por defecto
             cuenta_label = "Cuenta de destino" if tipo == "Ingreso" else "Cuenta de origen"
-            cuenta = st.selectbox(cuenta_label, CUENTAS)
+            cuentas_usuario_form = _load_cuentas_usuario()
+            if cuentas_usuario_form:
+                cuenta_opts = list(cuentas_usuario_form.keys())
+                cuenta_sel  = st.selectbox(cuenta_label, cuenta_opts, key="form_cuenta_sel")
+            else:
+                cuenta_sel  = st.selectbox(cuenta_label, CUENTAS, key="form_cuenta_sel")
+                cuentas_usuario_form = {}
         desc_obligatorio = (categoria == "Otro ingreso")
         desc_label       = "Descripción *" if desc_obligatorio else "Descripción"
         desc_placeholder = "Obligatorio — describe el ingreso…" if desc_obligatorio else "Opcional…"
         descripcion = st.text_input(desc_label, placeholder=desc_placeholder)
-        monto = st.number_input("Monto ($)", min_value=0.0, value=None,
+        sim = MONEDA_SIMBOLO.get(st.session_state.get("new_moneda", "COP"), "$")
+        monto = st.number_input(f"Monto ({sim})", min_value=0.0, value=None,
                                 placeholder="0", step=1000.0, format="%.0f")
         ok = st.form_submit_button("Guardar transacción", use_container_width=True)
         if ok:
-            cat_val     = st.session_state.get("new_cat", categoria)
-            activo_nom  = st.session_state.get("new_activo") if cat_val == "Portafolio" else None
+            cat_val    = st.session_state.get("new_cat", categoria)
+            mon_val    = st.session_state.get("new_moneda", "COP")
+            activo_nom = st.session_state.get("new_activo") if needs_activo else None
+            cuenta_nom = cuenta_sel
+            cuenta_id_val = None
+            if cuenta_sel in cuentas_usuario_form:
+                cuenta_id_val = int(cuentas_usuario_form[cuenta_sel]["id"])
+                cuenta_nom    = cuentas_usuario_form[cuenta_sel]["nombre"]
+
             if desc_obligatorio and not descripcion.strip():
-                st.error("La descripción es obligatoria para 'Otro ingreso'.")
+                st.warning("La descripción es necesaria para 'Otro ingreso'. Cuéntanos de qué se trata 📝")
             elif not monto or monto <= 0:
-                st.error("El monto debe ser mayor a 0.")
-            elif cat_val == "Portafolio" and not activo_nom:
-                st.error("Selecciona un activo del portafolio.")
+                st.warning("El monto debe ser mayor a cero.")
+            elif needs_activo and not activo_nom:
+                st.warning("Selecciona un activo del portafolio para continuar.")
+            elif needs_activo and activo_nom and activo_nom in activos_dict and \
+                 cat_val == "Retiro de portafolio" and monto > float(activos_dict[activo_nom]["cantidad"]):
+                st.warning(f"El retiro ({sim} {monto:,.0f}) supera el valor del activo ({cop(activos_dict[activo_nom]['cantidad'])}). Ajusta el monto.")
             else:
-                sb().table("transacciones").insert({
+                desc_auto = descripcion
+                if not desc_auto:
+                    if cat_val == "Portafolio" and activo_nom:
+                        desc_auto = f"Inversión en {activo_nom}"
+                    elif cat_val == "Retiro de portafolio" and activo_nom:
+                        desc_auto = f"Retiro de {activo_nom}"
+                payload = {
                     "fecha": str(fecha), "tipo": tipo, "categoria": cat_val,
-                    "descripcion": descripcion or (f"Inversión en {activo_nom}" if activo_nom else ""),
-                    "monto": monto, "cuenta": cuenta, "user_id": uid()
-                }).execute()
+                    "descripcion": desc_auto, "monto": monto,
+                    "cuenta": cuenta_nom, "user_id": uid()
+                }
+                try:
+                    payload["moneda"]    = mon_val
+                    payload["cuenta_id"] = cuenta_id_val
+                    sb().table("transacciones").insert(payload).execute()
+                except Exception:
+                    # Columnas nuevas aún no existen en la BD — guardar sin ellas
+                    payload.pop("moneda", None)
+                    payload.pop("cuenta_id", None)
+                    sb().table("transacciones").insert(payload).execute()
+
+                # Actualizar portafolio
                 if activo_nom and activo_nom in activos_dict:
-                    activo    = activos_dict[activo_nom]
-                    nuevo_val = float(activo["cantidad"]) + float(monto)
+                    activo = activos_dict[activo_nom]
+                    if cat_val == "Portafolio":
+                        nuevo_val = float(activo["cantidad"]) + float(monto)
+                    else:  # Retiro de portafolio
+                        nuevo_val = max(0.0, float(activo["cantidad"]) - float(monto))
                     sb().table("portafolio").update({"cantidad": nuevo_val}).eq("id", int(activo["id"])).eq("user_id", uid()).execute()
-                st.success(f"{'Ingreso' if tipo=='Ingreso' else 'Gasto'} de {cop(monto)} guardado{f' → {activo_nom} actualizado' if activo_nom else ''}.")
+
+                nota_activo = f" → {activo_nom} actualizado" if activo_nom else ""
+                st.success(f"{'Ingreso' if tipo=='Ingreso' else 'Gasto'} de {sim} {monto:,.0f} guardado{nota_activo} ✓")
                 st.rerun()
 
     resp = sb().table("transacciones").select("*").eq("user_id", uid()).order("fecha", desc=True).order("id", desc=True).execute()
     df = _df(resp)
     if df.empty:
-        st.info("Sin transacciones aún.")
+        st.info("Aún no tienes transacciones. ¡Registra tu primera aquí arriba! 💸")
         return
 
     # ── Dona de distribución de gastos ──
@@ -955,7 +1115,7 @@ def page_transacciones():
                     cancelar = st.form_submit_button("Cancelar", use_container_width=True)
                 if guardar:
                     if not e_monto or e_monto <= 0:
-                        st.error("El monto debe ser mayor a 0.")
+                        st.warning("El monto debe ser mayor a 0.")
                     else:
                         sb().table("transacciones").update({
                             "fecha": str(e_fecha), "categoria": e_cat,
@@ -993,9 +1153,9 @@ def page_portafolio():
         ok = st.form_submit_button("Agregar al portafolio", use_container_width=True)
         if ok:
             if not nombre:
-                st.error("Ingresa un nombre.")
+                st.warning("Dale un nombre a tu activo para identificarlo.")
             elif not valor or valor <= 0:
-                st.error("El valor debe ser mayor a 0.")
+                st.warning("El valor debe ser mayor a 0.")
             else:
                 sb().table("portafolio").insert({
                     "nombre": nombre, "tipo": tipo, "cantidad": valor,
@@ -1063,9 +1223,9 @@ def page_portafolio():
 
                 if confirmar:
                     if not ret_monto or ret_monto <= 0:
-                        st.error("Ingresa un monto válido.")
+                        st.warning("Ingresa un monto válido para retirar.")
                     elif ret_monto > saldo_act:
-                        st.error(f"No puedes retirar más de {cop(saldo_act)}.")
+                        st.warning(f"No puedes retirar más de lo que tienes en el activo ({cop(saldo_act)}).")
                     else:
                         nuevo_val = round(saldo_act - ret_monto, 2)
                         # Actualizar portafolio
@@ -1158,9 +1318,9 @@ def page_metas():
         ok = st.form_submit_button("Crear meta", use_container_width=True)
         if ok:
             if not nombre:
-                st.error("Ponle un nombre a tu meta.")
+                st.warning("Ponle un nombre a tu meta para identificarla.")
             elif not objetivo or objetivo <= 0:
-                st.error("El objetivo debe ser mayor a 0.")
+                st.warning("El monto objetivo debe ser mayor a 0.")
             else:
                 sb().table("metas").insert({
                     "nombre": nombre, "objetivo": objetivo, "actual": 0,
@@ -1219,7 +1379,7 @@ def page_metas():
                 )
                 if st.form_submit_button("Agregar fondos", use_container_width=True):
                     if not add_monto or add_monto <= 0:
-                        st.error("Ingresa un monto válido.")
+                        st.warning("Ingresa un monto mayor a 0 para agregar fondos.")
                     else:
                         nuevo_actual = min(float(r["actual"]) + add_monto, float(r["objetivo"]))
                         sb().table("metas").update({"actual": nuevo_actual}).eq("id", meta_id).eq("user_id", uid()).execute()
@@ -1266,9 +1426,9 @@ def page_deudas():
         ok = st.form_submit_button("Agregar deuda", use_container_width=True)
         if ok:
             if not nombre:
-                st.error("Ingresa un nombre para la deuda.")
+                st.warning("Dale un nombre a la deuda para identificarla.")
             elif not deuda_inicial or deuda_inicial <= 0:
-                st.error("El monto de la deuda debe ser mayor a 0.")
+                st.warning("El monto de la deuda debe ser mayor a 0.")
             else:
                 sb().table("deudas").insert({
                     "nombre": nombre, "tipo": tipo, "deuda_inicial": deuda_inicial,
@@ -1339,9 +1499,9 @@ def page_deudas():
                                           key=f"pago_nota_{deuda_id}")
                 if st.form_submit_button("Registrar pago", use_container_width=True):
                     if not pago_monto or pago_monto <= 0:
-                        st.error("Ingresa un monto válido.")
+                        st.warning("Ingresa un monto mayor a 0 para registrar el pago.")
                     elif pago_monto > saldo_val:
-                        st.error(f"El pago ({cop(pago_monto)}) supera el saldo ({cop(saldo_val)}).")
+                        st.warning(f"El monto del pago ({cop(pago_monto)}) supera el saldo restante ({cop(saldo_val)}).")
                     else:
                         nuevo_saldo = round(saldo_val - pago_monto, 2)
                         sb().table("pagos_deuda").insert({
@@ -1358,11 +1518,11 @@ def page_consilia():
     resp = sb().table("transacciones").select("*").eq("user_id", uid()).order("fecha", desc=True).execute()
     df = _df(resp)
     if df.empty:
-        ingresos, gastos, balance = 0.0, 0.0, 0.0
-    else:
-        ingresos = float(df[df["tipo"] == "Ingreso"]["monto"].sum())
-        gastos   = float(df[df["tipo"] == "Gasto"]["monto"].sum())
-        balance  = ingresos - gastos
+        st.info("📊 Registra tus transacciones para que Consil.ia pueda darte un análisis personalizado.")
+        return
+    ingresos = float(df[df["tipo"] == "Ingreso"]["monto"].sum())
+    gastos   = float(df[df["tipo"] == "Gasto"]["monto"].sum())
+    balance  = ingresos - gastos
     consilia_section(df, ingresos, gastos, balance)
 
 

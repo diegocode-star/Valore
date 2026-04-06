@@ -166,23 +166,6 @@ def email_exists(email):
 def reset_password(email, new_password):
     sb().table("usuarios").update({"password_hash": hash_password(new_password)}).eq("email", email.strip().lower()).execute()
 
-def restore_session():
-    """Restaura la sesión desde query_params si el usuario recargó la página."""
-    if st.session_state.get("user_id"):
-        return
-    uid_param = st.query_params.get("uid")
-    if uid_param:
-        try:
-            uid_val = int(uid_param)
-            resp = sb().table("usuarios").select("id, nombre, email").eq("id", uid_val).execute()
-            if resp.data:
-                st.session_state.user_id    = uid_val
-                st.session_state.user_name  = resp.data[0]["nombre"]
-                st.session_state.user_email = resp.data[0]["email"]
-            else:
-                st.query_params.clear()
-        except Exception:
-            st.query_params.clear()
 
 def uid():
     return st.session_state.get("user_id", 1)
@@ -571,7 +554,6 @@ def page_auth():
                         st.session_state.user_id    = user_id
                         st.session_state.user_name  = nombre
                         st.session_state.user_email = email.strip().lower()
-                        st.query_params["uid"] = user_id
                         st.rerun()
                     else:
                         if email_exists(email):
@@ -603,7 +585,6 @@ def page_auth():
                             st.session_state.user_id    = user_id
                             st.session_state.user_name  = uname
                             st.session_state.user_email = email.strip().lower()
-                            st.query_params["uid"] = user_id
                             st.rerun()
                         else:
                             st.error("Cuenta creada. Por favor inicia sesión.")
@@ -1182,8 +1163,6 @@ st.markdown("""
 </script>
 """, unsafe_allow_html=True)
 
-restore_session()
-
 if not st.session_state.get("user_id"):
     page_auth()
 else:
@@ -1202,7 +1181,6 @@ else:
         if st.button("Salir", key="logout"):
             del st.session_state["user_id"]
             del st.session_state["user_name"]
-            st.query_params.clear()
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 

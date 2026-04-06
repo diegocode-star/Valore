@@ -4,6 +4,7 @@ from datetime import date
 import hashlib
 import plotly.graph_objects as go
 import os
+import anthropic
 
 try:
     from dotenv import load_dotenv
@@ -356,6 +357,21 @@ def tx_row(icon, categoria, desc, fecha, monto, is_income):
       <p style="color:{color};font-size:14px;font-weight:600;margin:0;flex-shrink:0;padding-left:8px;">{sign}{cop(monto)}</p>
     </div>"""
 
+def consilia_response_card(text):
+    html_text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    html_text = html_text.replace("\n\n", '</p><p style="color:#F5F0E8;font-size:15px;line-height:1.75;margin:0.6rem 0 0;">').replace("\n", "<br>")
+    return f"""
+    <div style="background:linear-gradient(135deg,#322b49 0%,#3e3260 100%);
+                border-radius:20px;padding:1.5rem 1.6rem;margin-bottom:12px;
+                border:1px solid rgba(183,138,0,0.35);
+                box-shadow:0 4px 20px rgba(50,43,73,0.22);">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:1rem;">
+        <span style="color:#eab000;font-size:16px;">✦</span>
+        <span style="color:#eab000;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;">Consil.ia</span>
+      </div>
+      <p style="color:#F5F0E8;font-size:15px;line-height:1.75;margin:0;">{html_text}</p>
+    </div>"""
+
 def asset_row(icon, nombre, tipo, valor):
     return f"""
     <div style="display:flex;align-items:center;padding:12px 0;border-bottom:1px solid rgba(0,0,0,0.04);">
@@ -593,6 +609,125 @@ def page_auth():
                     else:
                         st.error(err)
 
+# ─── Consil.ia ────────────────────────────────────────────────────────────────
+def _get_anthropic_key():
+    try:
+        key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    except Exception:
+        key = ""
+    return key or os.environ.get("ANTHROPIC_API_KEY", "")
+
+def consilia_section(df, ingresos_total, gastos_total, balance_total):
+    st.markdown(section_title("✦ Consil.ia — Tu asesora financiera"), unsafe_allow_html=True)
+
+    # ── Construir contexto del usuario ──────────────────────────────────────
+    mes_actual = date.today().strftime("%Y-%m")
+    nombre_mes = date.today().strftime("%B %Y")
+    df_mes_gastos  = df[(df["tipo"] == "Gasto") & (df["fecha"].str.startswith(mes_actual))]
+    df_mes_ingresos = df[(df["tipo"] == "Ingreso") & (df["fecha"].str.startswith(mes_actual))]
+    ingresos_mes = df_mes_ingresos["monto"].sum()
+    gastos_mes   = df_mes_gastos["monto"].sum()
+    top_cats = df_mes_gastos.groupby("categoria")["monto"].sum().sort_values(ascending=False).head(5)
+
+    deudas_resp = sb().table("deudas").select("nombre, tipo, saldo, tasa_interes, pago_minimo").eq("user_id", uid()).execute()
+    metas_resp  = sb().table("metas").select("nombre, objetivo, actual, fecha_limite").eq("user_id", uid()).execute()
+    deudas = deudas_resp.data or []
+    metas  = metas_resp.data or []
+
+    ctx = [
+        f"Fecha actual: {date.today().strftime('%d/%m/%Y')}",
+        f"Balance histórico acumulado: {cop(balance_total)}",
+        f"Ingresos históricos totales: {cop(ingresos_total)}",
+        f"Gastos históricos totales: {cop(gastos_total)}",
+        f"\nEste mes ({nombre_mes}):",
+        f"  Ingresos: {cop(ingresos_mes)}",
+        f"  Gastos: {cop(gastos_mes)}",
+        f"  Balance del mes: {cop(ingresos_mes - gastos_mes)}",
+    ]
+    if not top_cats.empty:
+        ctx.append(f"\nTop categorías de gasto este mes:")
+        for cat, monto in top_cats.items():
+            pct = (monto / gastos_mes * 100) if gastos_mes > 0 else 0
+            ctx.append(f"  - {cat}: {cop(monto)} ({pct:.0f}% del gasto mensual)")
+    if deudas:
+        ctx.append(f"\nDeudas activas ({len(deudas)}):")
+        for d in deudas:
+            ctx.append(f"  - {d['nombre']} ({d['tipo']}): saldo {cop(d['saldo'])}, tasa {d.get('tasa_interes') or 0}% anual, pago mínimo {cop(d.get('pago_minimo') or 0)}")
+    else:
+        ctx.append("\nDeudas activas: ninguna")
+    if metas:
+        ctx.append(f"\nMetas de ahorro ({len(metas)}):")
+        for m in metas:
+            prog = float(m["actual"] or 0) / float(m["objetivo"]) * 100 if m.get("objetivo") else 0
+            limite = f", fecha límite: {m['fecha_limite']}" if m.get("fecha_limite") else ""
+            ctx.append(f"  - {m['nombre']}: {cop(m['actual'])} de {cop(m['objetivo'])} ({prog:.0f}%){limite}")
+    else:
+        ctx.append("\nMetas de ahorro: ninguna")
+
+    contexto_financiero = "\n".join(ctx)
+
+    SYSTEM_PROMPT = """Eres Consil.ia, asesora financiera personal para jóvenes profesionales colombianos.
+Tu misión es analizar los datos reales del usuario y darle recomendaciones concretas, claras y motivadoras.
+Reglas:
+- Responde siempre en español colombiano, tono cercano y profesional.
+- Usa los números exactos que te dan (en pesos colombianos).
+- Máximo 4 puntos o párrafos. Sé concisa y práctica.
+- Cada recomendación debe ser accionable esta semana.
+- Usa emojis con moderación para hacer el texto más visual.
+- Nunca inventes datos que no estén en el contexto."""
+
+    # ── UI ───────────────────────────────────────────────────────────────────
+    pregunta = st.text_input(
+        "O hazle una pregunta específica",
+        placeholder="¿En qué estoy gastando más? ¿Cuándo puedo pagar mi deuda? ¿Cómo ahorro más rápido?",
+        key="consilia_question",
+        label_visibility="collapsed",
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        btn_analizar  = st.button("✦ Analizar mis finanzas", use_container_width=True, key="btn_consilia_analizar")
+    with c2:
+        btn_preguntar = st.button("Enviar pregunta →", use_container_width=True, key="btn_consilia_preguntar",
+                                   disabled=not pregunta.strip())
+
+    if not (btn_analizar or btn_preguntar):
+        return
+
+    api_key = _get_anthropic_key()
+    if not api_key:
+        st.error("Falta ANTHROPIC_API_KEY. Agrégala en Streamlit Cloud → Settings → Secrets.")
+        return
+
+    if btn_analizar:
+        user_msg = (
+            f"Analiza mis finanzas y dame tus recomendaciones más importantes.\n\n"
+            f"Mis datos financieros:\n{contexto_financiero}"
+        )
+    else:
+        user_msg = (
+            f"Datos financieros del usuario:\n{contexto_financiero}\n\n"
+            f"Pregunta: {pregunta.strip()}"
+        )
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        with st.spinner("Consil.ia está analizando..."):
+            response = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=1024,
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_msg}],
+            )
+        respuesta = response.content[0].text
+        st.markdown(consilia_response_card(respuesta), unsafe_allow_html=True)
+    except anthropic.AuthenticationError:
+        st.error("API key de Anthropic inválida. Verifica tu configuración.")
+    except anthropic.RateLimitError:
+        st.error("Límite de uso de la API alcanzado. Intenta en unos minutos.")
+    except Exception as e:
+        st.error(f"Error al contactar Consil.ia: {e}")
+
+
 # ─── Pages ────────────────────────────────────────────────────────────────────
 def page_dashboard():
     resp = sb().table("transacciones").select("*").eq("user_id", uid()).order("fecha", desc=True).order("id", desc=True).execute()
@@ -644,6 +779,8 @@ def page_dashboard():
         icon = CAT_ICONS.get(r["categoria"], "💸")
         rows_html += tx_row(icon, r["categoria"], r["descripcion"], r["fecha"], r["monto"], r["tipo"] == "Ingreso")
     st.markdown(card_wrap(rows_html, "0.6rem 1.2rem"), unsafe_allow_html=True)
+
+    consilia_section(df, ingresos, gastos, balance)
 
 
 def page_transacciones():

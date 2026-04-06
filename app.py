@@ -21,7 +21,7 @@ CATEGORIAS_GASTO   = ["Alimentación", "Restaurantes", "Transporte", "Vivienda",
 TIPOS_ACTIVO       = ["Acciones", "Crypto", "Ahorro", "Inmuebles", "Bonos", "Otro"]
 TIPOS_DEUDA        = ["Tarjeta de crédito", "Préstamo personal", "Hipoteca", "Auto", "Estudiantil", "Otro"]
 CUENTAS            = ["Efectivo", "Cuenta bancaria", "Tarjeta de crédito", "Billetera digital", "Otro"]
-TIPOS_CUENTA       = ["Cuenta bancaria", "Billetera digital", "Efectivo", "Inversiones", "Otro"]
+TIPOS_CUENTA       = ["Cuenta bancaria", "Billetera digital", "Efectivo", "Tarjeta de crédito", "Inversiones", "Otro"]
 META_EMOJIS        = ["🎯", "✈️", "🏠", "🚗", "💍", "🎓", "🏖️", "💪", "🛍️", "🌟"]
 ADMIN_EMAIL        = "diegorenba@gmail.com"
 
@@ -116,7 +116,10 @@ CREATE TABLE IF NOT EXISTS deudas (
     deuda_inicial DOUBLE PRECISION NOT NULL, saldo DOUBLE PRECISION NOT NULL,
     tasa_interes DOUBLE PRECISION NOT NULL DEFAULT 0,
     pago_minimo DOUBLE PRECISION NOT NULL DEFAULT 0,
-    fecha_inicio TEXT NOT NULL, user_id BIGINT NOT NULL DEFAULT 1
+    fecha_inicio TEXT NOT NULL,
+    cupo_maximo DOUBLE PRECISION,
+    num_cuotas INTEGER,
+    user_id BIGINT NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS pagos_deuda (
     id BIGSERIAL PRIMARY KEY,
@@ -135,6 +138,8 @@ CREATE TABLE IF NOT EXISTS metas (
 _MIGRATION_SQL = """-- Migraciones para versión actual (ejecuta una sola vez en el SQL Editor de Supabase):
 ALTER TABLE transacciones ADD COLUMN IF NOT EXISTS moneda TEXT DEFAULT 'COP';
 ALTER TABLE transacciones ADD COLUMN IF NOT EXISTS cuenta_id BIGINT;
+ALTER TABLE deudas ADD COLUMN IF NOT EXISTS cupo_maximo DOUBLE PRECISION;
+ALTER TABLE deudas ADD COLUMN IF NOT EXISTS num_cuotas INTEGER;
 CREATE TABLE IF NOT EXISTS cuentas (
     id BIGSERIAL PRIMARY KEY,
     nombre TEXT NOT NULL, tipo TEXT NOT NULL,
@@ -166,10 +171,10 @@ def init_db():
         st.stop()
 
     # Mostrar aviso de migración si faltan columnas nuevas
-    if not _has_column("transacciones", "moneda"):
+    if not _has_column("transacciones", "moneda") or not _has_column("deudas", "cupo_maximo"):
         with st.sidebar:
             st.warning("🔧 **Actualización pendiente**")
-            st.markdown("Ejecuta este SQL en el [Editor de Supabase](https://supabase.com/dashboard/project/vyhlfosmnbetiohtcxbp/sql/new) para activar multi-moneda y cuentas:")
+            st.markdown("Ejecuta este SQL en el [Editor de Supabase](https://supabase.com/dashboard/project/vyhlfosmnbetiohtcxbp/sql/new):")
             st.code(_MIGRATION_SQL, language="sql")
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -212,6 +217,15 @@ def uid():
 def cop(n):
     n = int(round(float(n or 0)))
     return "$ " + f"{abs(n):,}".replace(",", ".")
+
+def calcular_cuota(saldo, tasa_anual, num_cuotas):
+    """Calcula el pago mensual fijo por cuotas (amortización francesa)."""
+    if num_cuotas <= 0 or saldo <= 0:
+        return 0.0
+    tasa_m = tasa_anual / 12 / 100
+    if tasa_m > 0:
+        return saldo * tasa_m / (1 - (1 + tasa_m) ** (-num_cuotas))
+    return saldo / num_cuotas
 
 def proyectar_deuda(saldo, tasa_anual, pago_minimo):
     if pago_minimo <= 0 or saldo <= 0:
@@ -420,7 +434,7 @@ def asset_row(icon, nombre, tipo, valor):
       <p style="color:#4A7C59;font-size:14px;font-weight:600;margin:0;">{cop(valor)}</p>
     </div>"""
 
-def debt_card(nombre, tipo, deuda_inicial, saldo, tasa, pago_minimo, fecha_fin=None, total_int=None):
+def debt_card(nombre, tipo, deuda_inicial, saldo, tasa, pago_minimo, fecha_fin=None, total_int=None, cupo_maximo=None, meses_restantes=None):
     pagado = max(deuda_inicial - saldo, 0)
     pct    = pagado / deuda_inicial if deuda_inicial > 0 else 0
     bar_w  = int(pct * 100)
@@ -429,22 +443,44 @@ def debt_card(nombre, tipo, deuda_inicial, saldo, tasa, pago_minimo, fecha_fin=N
     icon   = DEUDA_ICONS.get(tipo, "📋")
     tasa_s = f"{tasa:.1f}% anual" if tasa > 0 else "Sin interés"
 
+    # Cupo disponible (solo tarjeta de crédito)
+    cupo_html = ""
+    if tipo == "Tarjeta de crédito" and cupo_maximo and cupo_maximo > 0:
+        cupo_disp = max(cupo_maximo - saldo, 0)
+        cupo_usado_pct = min(int(saldo / cupo_maximo * 100), 100)
+        cupo_color = "#4A7C59" if cupo_usado_pct < 50 else "#b78a00" if cupo_usado_pct < 80 else "#C0392B"
+        cupo_html = (
+            f'<div style="background:#F5F0E8;border-radius:12px;padding:10px 12px;margin-top:10px;">'
+            f'<div style="display:flex;justify-content:space-between;margin-bottom:6px;">'
+            f'<p style="color:#5c5474;font-size:10px;text-transform:uppercase;letter-spacing:0.7px;font-weight:600;margin:0;">💳 Cupo disponible</p>'
+            f'<p style="color:{cupo_color};font-size:12px;font-weight:700;margin:0;">{cop(cupo_disp)}</p>'
+            f'</div>'
+            f'<div style="background:#DDD8CC;border-radius:6px;height:6px;overflow:hidden;">'
+            f'<div style="width:{cupo_usado_pct}%;height:100%;border-radius:6px;background:{cupo_color};"></div>'
+            f'</div>'
+            f'<p style="color:#6b6285;font-size:10px;margin:4px 0 0;">{cupo_usado_pct}% del cupo usado · Total: {cop(cupo_maximo)}</p>'
+            f'</div>'
+        )
+
+    # Proyección
     if fecha_fin and total_int is not None:
+        cuotas_s = f" · {meses_restantes} cuota(s)" if meses_restantes else ""
         proj_html = (
             f'<div style="background:#F5F0E8;border-radius:12px;padding:10px 12px;margin-top:12px;border:1px solid rgba(192,57,43,0.1);">'
             f'<p style="color:#5c5474;font-size:10px;text-transform:uppercase;letter-spacing:0.7px;font-weight:600;margin:0 0 6px;">📅 Proyección de pago</p>'
             f'<div style="display:flex;justify-content:space-between;">'
-            f'<div><p style="color:#5c5474;font-size:11px;margin:0;">Fecha estimada de pago</p>'
+            f'<div><p style="color:#5c5474;font-size:11px;margin:0;">Fecha estimada{cuotas_s}</p>'
             f'<p style="color:#1c1829;font-size:13px;font-weight:600;margin:2px 0 0;">{fecha_fin.strftime("%b %Y")}</p></div>'
             f'<div style="text-align:right;"><p style="color:#5c5474;font-size:11px;margin:0;">Total en intereses</p>'
             f'<p style="color:#C0392B;font-size:13px;font-weight:600;margin:2px 0 0;">{cop(total_int)}</p></div>'
             f'</div></div>'
         )
     elif pago_minimo <= 0:
-        proj_html = '<p style="color:#5c5474;font-size:11px;margin:10px 0 0;">Sin pago mínimo registrado para proyectar.</p>'
+        proj_html = '<p style="color:#5c5474;font-size:11px;margin:10px 0 0;">Sin pago mensual registrado para proyectar.</p>'
     else:
-        proj_html = '<p style="color:#C0392B;font-size:11px;margin:10px 0 0;">⚠️ El pago mínimo no alcanza a cubrir los intereses.</p>'
+        proj_html = '<p style="color:#C0392B;font-size:11px;margin:10px 0 0;">⚠️ El pago mensual no alcanza a cubrir los intereses.</p>'
 
+    pago_label = "Cuota mensual" if tipo == "Tarjeta de crédito" else "Pago mínimo"
     return f"""
     <div style="background:#FFFFFF;border-radius:20px;padding:1.3rem 1.5rem;
                 border:1px solid rgba(192,57,43,0.1);margin-bottom:10px;
@@ -470,7 +506,7 @@ def debt_card(nombre, tipo, deuda_inicial, saldo, tasa, pago_minimo, fecha_fin=N
           <p style="color:#4A7C59;font-size:13px;font-weight:600;margin:3px 0 0;">{cop(pagado)} <span style="color:#6b6285;font-weight:400;">({int(pct*100)}%)</span></p>
         </div>
         <div style="text-align:center;">
-          <p style="color:#5c5474;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;margin:0;">Pago mínimo</p>
+          <p style="color:#5c5474;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;margin:0;">{pago_label}</p>
           <p style="color:#1c1829;font-size:13px;font-weight:600;margin:3px 0 0;">{cop(pago_minimo)}/mes</p>
         </div>
         <div style="text-align:right;">
@@ -478,6 +514,7 @@ def debt_card(nombre, tipo, deuda_inicial, saldo, tasa, pago_minimo, fecha_fin=N
           <p style="color:#1c1829;font-size:13px;font-weight:600;margin:3px 0 0;">{cop(deuda_inicial)}</p>
         </div>
       </div>
+      {cupo_html}
       {proj_html}
     </div>"""
 
@@ -828,6 +865,14 @@ def page_dashboard():
     st.markdown(card_wrap(rows_html, "0.6rem 1.2rem"), unsafe_allow_html=True)
 
 
+def _load_tarjetas_credito():
+    """Devuelve lista de dicts de deudas tipo Tarjeta de crédito del usuario."""
+    try:
+        r = sb().table("deudas").select("id, nombre, saldo, cupo_maximo").eq("user_id", uid()).eq("tipo", "Tarjeta de crédito").order("nombre").execute()
+        return r.data or []
+    except Exception:
+        return []
+
 def _load_activos():
     r = sb().table("portafolio").select("id, nombre, cantidad").eq("user_id", uid()).order("nombre").execute()
     return {a["nombre"]: a for a in r.data} if r.data else {}
@@ -918,6 +963,25 @@ def page_transacciones():
         else:
             st.info("Primero agrega activos en tu portafolio para poder asignarles transacciones 📈")
 
+    # ── Selector de tarjeta de crédito cuando la cuenta origen es TC ──────
+    tarjetas_list   = []
+    cuenta_prev_val = st.session_state.get("form_cuenta_sel", "")
+    cuentas_u_prev  = _load_cuentas_usuario()
+    es_cuenta_tc    = (
+        cuenta_prev_val == "Tarjeta de crédito" or
+        (cuenta_prev_val in cuentas_u_prev and
+         cuentas_u_prev[cuenta_prev_val].get("tipo") == "Tarjeta de crédito")
+    )
+    needs_tarjeta = (tipo == "Gasto") and es_cuenta_tc
+    if needs_tarjeta:
+        tarjetas_list = _load_tarjetas_credito()
+        if tarjetas_list:
+            tc_opts = [t["nombre"] for t in tarjetas_list]
+            st.selectbox("Tarjeta de crédito", tc_opts, key="new_tarjeta_tc",
+                         help="Se sumará el gasto al saldo de esta tarjeta en Deudas")
+        else:
+            st.info("Registra tus tarjetas en la pestaña Deudas para vincularlas aquí 💳")
+
     with st.form("form_tx", clear_on_submit=True):
         c1, c2 = st.columns(2)
         with c1:
@@ -950,6 +1014,11 @@ def page_transacciones():
                 cuenta_id_val = int(cuentas_usuario_form[cuenta_sel]["id"])
                 cuenta_nom    = cuentas_usuario_form[cuenta_sel]["nombre"]
 
+            # Resolve tarjeta seleccionada
+            tarjeta_nom = st.session_state.get("new_tarjeta_tc") if needs_tarjeta else None
+            tarjeta_rec = next((t for t in tarjetas_list if t["nombre"] == tarjeta_nom), None) if tarjeta_nom else None
+
+            # Validaciones
             if desc_obligatorio and not descripcion.strip():
                 st.warning("La descripción es necesaria para 'Otro ingreso'. Cuéntanos de qué se trata 📝")
             elif not monto or monto <= 0:
@@ -960,12 +1029,22 @@ def page_transacciones():
                  cat_val == "Retiro de portafolio" and monto > float(activos_dict[activo_nom]["cantidad"]):
                 st.warning(f"El retiro ({sim} {monto:,.0f}) supera el valor del activo ({cop(activos_dict[activo_nom]['cantidad'])}). Ajusta el monto.")
             else:
+                # Advertencia cupo (no bloquea)
+                if tarjeta_rec:
+                    cupo_max = tarjeta_rec.get("cupo_maximo") or 0
+                    saldo_tc = float(tarjeta_rec.get("saldo") or 0)
+                    if cupo_max > 0 and (saldo_tc + monto) > cupo_max:
+                        cupo_disp = max(cupo_max - saldo_tc, 0)
+                        st.warning(f"⚠️ Este gasto supera el cupo disponible de {cop(cupo_disp)}. Se registrará de todas formas.")
+
                 desc_auto = descripcion
                 if not desc_auto:
                     if cat_val == "Portafolio" and activo_nom:
                         desc_auto = f"Inversión en {activo_nom}"
                     elif cat_val == "Retiro de portafolio" and activo_nom:
                         desc_auto = f"Retiro de {activo_nom}"
+                    elif tarjeta_rec:
+                        desc_auto = f"Cargo a {tarjeta_rec['nombre']}"
                 payload = {
                     "fecha": str(fecha), "tipo": tipo, "categoria": cat_val,
                     "descripcion": desc_auto, "monto": monto,
@@ -990,8 +1069,17 @@ def page_transacciones():
                         nuevo_val = max(0.0, float(activo["cantidad"]) - float(monto))
                     sb().table("portafolio").update({"cantidad": nuevo_val}).eq("id", int(activo["id"])).eq("user_id", uid()).execute()
 
-                nota_activo = f" → {activo_nom} actualizado" if activo_nom else ""
-                st.success(f"{'Ingreso' if tipo=='Ingreso' else 'Gasto'} de {sim} {monto:,.0f} guardado{nota_activo} ✓")
+                # Actualizar saldo de la tarjeta de crédito en Deudas
+                if tarjeta_rec:
+                    nuevo_saldo_tc = round(float(tarjeta_rec["saldo"]) + monto, 2)
+                    try:
+                        sb().table("deudas").update({"saldo": nuevo_saldo_tc}).eq("id", int(tarjeta_rec["id"])).eq("user_id", uid()).execute()
+                    except Exception:
+                        pass
+
+                nota_activo  = f" → {activo_nom} actualizado" if activo_nom else ""
+                nota_tarjeta = f" · Saldo {tarjeta_rec['nombre']} actualizado" if tarjeta_rec else ""
+                st.success(f"{'Ingreso' if tipo=='Ingreso' else 'Gasto'} de {sim} {monto:,.0f} guardado{nota_activo}{nota_tarjeta} ✓")
                 st.rerun()
 
     resp = sb().table("transacciones").select("*").eq("user_id", uid()).order("fecha", desc=True).order("id", desc=True).execute()
@@ -1410,33 +1498,62 @@ def page_deudas():
     """), unsafe_allow_html=True)
 
     st.markdown(section_title("Registrar deuda"), unsafe_allow_html=True)
+    tipo_deuda_nuevo = st.selectbox("Tipo", TIPOS_DEUDA, key="new_deuda_tipo")
+    es_tarjeta_nuevo = tipo_deuda_nuevo == "Tarjeta de crédito"
     with st.form("form_deuda", clear_on_submit=True):
         nombre = st.text_input("Nombre", placeholder="Tarjeta Visa, Préstamo banco…")
         c1, c2 = st.columns(2)
         with c1:
-            tipo          = st.selectbox("Tipo", TIPOS_DEUDA)
-            deuda_inicial = st.number_input("Deuda total ($)", min_value=0.0, value=None,
+            deuda_inicial = st.number_input("Deuda / saldo actual ($)", min_value=0.0, value=None,
                                             placeholder="0", step=100000.0, format="%.0f")
         with c2:
-            tasa        = st.number_input("Tasa de interés anual (%)", min_value=0.0,
-                                          value=None, placeholder="18.5", step=0.1, format="%.2f")
-            pago_minimo = st.number_input("Pago mínimo mensual ($)", min_value=0.0,
-                                          value=None, placeholder="0", step=10000.0, format="%.0f")
+            tasa = st.number_input("Tasa de interés anual (%)", min_value=0.0,
+                                   value=None, placeholder="18.5", step=0.1, format="%.2f")
+        if es_tarjeta_nuevo:
+            tc1, tc2 = st.columns(2)
+            with tc1:
+                cupo_maximo_inp = st.number_input("Cupo máximo ($) — opcional", min_value=0.0, value=None,
+                                                  placeholder="0", step=100000.0, format="%.0f")
+            with tc2:
+                num_cuotas_inp = st.number_input("Nº de cuotas — opcional", min_value=0, value=None,
+                                                 placeholder="0", step=1, format="%d")
+            pago_minimo_inp = st.number_input("Pago mínimo mensual ($) — opcional si usas cuotas",
+                                              min_value=0.0, value=None, placeholder="0",
+                                              step=10000.0, format="%.0f")
+        else:
+            cupo_maximo_inp = None
+            num_cuotas_inp  = None
+            pago_minimo_inp = st.number_input("Pago mínimo mensual ($)", min_value=0.0,
+                                              value=None, placeholder="0", step=10000.0, format="%.0f")
         fecha_inicio = st.date_input("Fecha de inicio", value=date.today())
         ok = st.form_submit_button("Agregar deuda", use_container_width=True)
         if ok:
+            tipo_val = st.session_state.get("new_deuda_tipo", tipo_deuda_nuevo)
             if not nombre:
                 st.warning("Dale un nombre a la deuda para identificarla.")
             elif not deuda_inicial or deuda_inicial <= 0:
                 st.warning("El monto de la deuda debe ser mayor a 0.")
             else:
-                sb().table("deudas").insert({
-                    "nombre": nombre, "tipo": tipo, "deuda_inicial": deuda_inicial,
-                    "saldo": deuda_inicial, "tasa_interes": tasa or 0.0,
-                    "pago_minimo": pago_minimo or 0.0,
+                # Si hay cuotas, calcular el pago mensual automáticamente
+                pago_final = float(pago_minimo_inp or 0.0)
+                nc = int(num_cuotas_inp or 0)
+                if nc > 0 and pago_final == 0:
+                    pago_final = round(calcular_cuota(deuda_inicial, float(tasa or 0), nc), 0)
+                payload = {
+                    "nombre": nombre, "tipo": tipo_val, "deuda_inicial": deuda_inicial,
+                    "saldo": deuda_inicial, "tasa_interes": float(tasa or 0.0),
+                    "pago_minimo": pago_final,
                     "fecha_inicio": str(fecha_inicio), "user_id": uid()
-                }).execute()
-                st.success(f"Deuda '{nombre}' registrada.")
+                }
+                try:
+                    payload["cupo_maximo"] = float(cupo_maximo_inp) if cupo_maximo_inp else None
+                    payload["num_cuotas"]  = nc if nc > 0 else None
+                    sb().table("deudas").insert(payload).execute()
+                except Exception:
+                    payload.pop("cupo_maximo", None)
+                    payload.pop("num_cuotas", None)
+                    sb().table("deudas").insert(payload).execute()
+                st.success(f"Deuda '{nombre}' registrada." + (f" Cuota calculada: {cop(pago_final)}/mes." if nc > 0 and pago_final > 0 else ""))
                 st.rerun()
 
     if df.empty:
@@ -1450,8 +1567,15 @@ def page_deudas():
         paying    = st.session_state.get("paying_deuda_id") == deuda_id
 
         fecha_fin, total_int = proyectar_deuda(saldo_val, r["tasa_interes"], r["pago_minimo"])
+        meses_rest = None
+        if fecha_fin:
+            today = date.today()
+            meses_rest = (fecha_fin.year - today.year) * 12 + (fecha_fin.month - today.month)
+            meses_rest = max(meses_rest, 1)
+        cupo_max_val = r.get("cupo_maximo") if "cupo_maximo" in r else None
         st.markdown(debt_card(r["nombre"], r["tipo"], r["deuda_inicial"], saldo_val,
-                              r["tasa_interes"], r["pago_minimo"], fecha_fin, total_int),
+                              r["tasa_interes"], r["pago_minimo"], fecha_fin, total_int,
+                              cupo_maximo=cupo_max_val, meses_restantes=meses_rest),
                     unsafe_allow_html=True)
 
         pagos_resp = sb().table("pagos_deuda").select("*").eq("deuda_id", deuda_id).order("fecha", desc=True).limit(5).execute()

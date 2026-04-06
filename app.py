@@ -17,7 +17,7 @@ from supabase import create_client
 # ─── Constants ────────────────────────────────────────────────────────────────
 CATEGORIAS_INGRESO = ["Salario", "Préstamo", "Otro ingreso"]
 CATEGORIAS_GASTO   = ["Alimentación", "Restaurantes", "Transporte", "Vivienda", "Salud",
-                      "Educación", "Entretenimiento", "Ropa", "Servicios", "Deudas", "Otro gasto"]
+                      "Educación", "Entretenimiento", "Ropa", "Servicios", "Deudas", "Portafolio", "Otro gasto"]
 TIPOS_ACTIVO       = ["Acciones", "Crypto", "Ahorro", "Inmuebles", "Bonos", "Otro"]
 TIPOS_DEUDA        = ["Tarjeta de crédito", "Préstamo personal", "Hipoteca", "Auto", "Estudiantil", "Otro"]
 CUENTAS            = ["Efectivo", "Cuenta bancaria", "Tarjeta de crédito", "Billetera digital", "Otro"]
@@ -31,7 +31,7 @@ CUENTA_ICONS = {
 CAT_ICONS = {
     "Salario":"💼","Préstamo":"🏦","Otro ingreso":"💰",
     "Alimentación":"🛒","Restaurantes":"🍽️","Transporte":"🚗","Vivienda":"🏠","Salud":"💊","Educación":"📚",
-    "Entretenimiento":"🎬","Ropa":"👗","Servicios":"⚡","Deudas":"💳","Otro gasto":"📦",
+    "Entretenimiento":"🎬","Ropa":"👗","Servicios":"⚡","Deudas":"💳","Portafolio":"📈","Otro gasto":"📦",
     "Acciones":"📊","Crypto":"₿","Ahorro":"🏦","Inmuebles":"🏡","Bonos":"📜","Otro":"💎",
 }
 DEUDA_ICONS = {
@@ -783,35 +783,55 @@ def page_dashboard():
 
 def page_transacciones():
     st.markdown(section_title("Nueva transacción"), unsafe_allow_html=True)
-    tipo = st.selectbox("Tipo", ["Gasto", "Ingreso"], key="new_tipo")
-    cats = CATEGORIAS_GASTO if tipo == "Gasto" else CATEGORIAS_INGRESO
+    tipo      = st.selectbox("Tipo", ["Gasto", "Ingreso"], key="new_tipo")
+    cats      = CATEGORIAS_GASTO if tipo == "Gasto" else CATEGORIAS_INGRESO
+    categoria = st.selectbox("Categoría", cats, key="new_cat")
+
+    # ── Selector de activo cuando categoría = Portafolio ──────────────────
+    activos_dict = {}
+    if tipo == "Gasto" and categoria == "Portafolio":
+        resp_act = sb().table("portafolio").select("id, nombre, cantidad").eq("user_id", uid()).order("nombre").execute()
+        if resp_act.data:
+            activos_dict = {a["nombre"]: a for a in resp_act.data}
+        if activos_dict:
+            st.selectbox("Activo del portafolio", list(activos_dict.keys()), key="new_activo")
+        else:
+            st.info("No tienes activos en tu portafolio. Agrégalos en la pestaña Portafolio.")
 
     with st.form("form_tx", clear_on_submit=True):
         c1, c2 = st.columns(2)
         with c1:
             fecha = st.date_input("Fecha", value=date.today())
         with c2:
-            categoria = st.selectbox("Categoría", cats)
-        cuenta_label = "Cuenta de destino" if tipo == "Ingreso" else "Cuenta de origen"
-        cuenta = st.selectbox(cuenta_label, CUENTAS)
+            cuenta_label = "Cuenta de destino" if tipo == "Ingreso" else "Cuenta de origen"
+            cuenta = st.selectbox(cuenta_label, CUENTAS)
         desc_obligatorio = (categoria == "Otro ingreso")
-        desc_label = "Descripción *" if desc_obligatorio else "Descripción"
+        desc_label       = "Descripción *" if desc_obligatorio else "Descripción"
         desc_placeholder = "Obligatorio — describe el ingreso…" if desc_obligatorio else "Opcional…"
         descripcion = st.text_input(desc_label, placeholder=desc_placeholder)
         monto = st.number_input("Monto ($)", min_value=0.0, value=None,
                                 placeholder="0", step=1000.0, format="%.0f")
         ok = st.form_submit_button("Guardar transacción", use_container_width=True)
         if ok:
+            cat_val     = st.session_state.get("new_cat", categoria)
+            activo_nom  = st.session_state.get("new_activo") if cat_val == "Portafolio" else None
             if desc_obligatorio and not descripcion.strip():
                 st.error("La descripción es obligatoria para 'Otro ingreso'.")
             elif not monto or monto <= 0:
                 st.error("El monto debe ser mayor a 0.")
+            elif cat_val == "Portafolio" and not activo_nom:
+                st.error("Selecciona un activo del portafolio.")
             else:
                 sb().table("transacciones").insert({
-                    "fecha": str(fecha), "tipo": tipo, "categoria": categoria,
-                    "descripcion": descripcion, "monto": monto, "cuenta": cuenta, "user_id": uid()
+                    "fecha": str(fecha), "tipo": tipo, "categoria": cat_val,
+                    "descripcion": descripcion or (f"Inversión en {activo_nom}" if activo_nom else ""),
+                    "monto": monto, "cuenta": cuenta, "user_id": uid()
                 }).execute()
-                st.success(f"{'Ingreso' if tipo=='Ingreso' else 'Gasto'} de {cop(monto)} guardado.")
+                if activo_nom and activo_nom in activos_dict:
+                    activo    = activos_dict[activo_nom]
+                    nuevo_val = float(activo["cantidad"]) + float(monto)
+                    sb().table("portafolio").update({"cantidad": nuevo_val}).eq("id", int(activo["id"])).eq("user_id", uid()).execute()
+                st.success(f"{'Ingreso' if tipo=='Ingreso' else 'Gasto'} de {cop(monto)} guardado{f' → {activo_nom} actualizado' if activo_nom else ''}.")
                 st.rerun()
 
     resp = sb().table("transacciones").select("*").eq("user_id", uid()).order("fecha", desc=True).order("id", desc=True).execute()
@@ -991,28 +1011,96 @@ def page_portafolio():
 
     if "editing_asset_id" not in st.session_state:
         st.session_state.editing_asset_id = None
+    if "withdrawing_asset_id" not in st.session_state:
+        st.session_state.withdrawing_asset_id = None
 
     for _, r in df.iterrows():
-        asset_id = int(r["id"])
-        icon     = CAT_ICONS.get(r["tipo"], "💎")
-        editing  = st.session_state.editing_asset_id == asset_id
+        asset_id   = int(r["id"])
+        icon       = CAT_ICONS.get(r["tipo"], "💎")
+        editing    = st.session_state.editing_asset_id    == asset_id
+        withdrawing = st.session_state.withdrawing_asset_id == asset_id
 
-        col_info, col_edit, col_del = st.columns([9, 1, 1])
+        col_info, col_ret, col_edit, col_del = st.columns([8, 1, 1, 1])
         with col_info:
             st.markdown(card_wrap(asset_row(icon, r["nombre"], r["tipo"], r["cantidad"]), "0 1.2rem"), unsafe_allow_html=True)
+        with col_ret:
+            st.markdown("<div style='height:44px'></div>", unsafe_allow_html=True)
+            if st.button("↩", key=f"ret_port_{asset_id}", help="Retirar fondos"):
+                st.session_state.withdrawing_asset_id = None if withdrawing else asset_id
+                if not withdrawing:
+                    st.session_state.editing_asset_id = None
+                st.rerun()
         with col_edit:
             st.markdown("<div style='height:44px'></div>", unsafe_allow_html=True)
             if st.button("✏️", key=f"edit_port_{asset_id}", help="Editar valor"):
                 st.session_state.editing_asset_id = None if editing else asset_id
+                if not editing:
+                    st.session_state.withdrawing_asset_id = None
                 st.rerun()
         with col_del:
             st.markdown("<div style='height:44px'></div>", unsafe_allow_html=True)
             if st.button("✕", key=f"del_port_{asset_id}", help="Eliminar activo"):
                 sb().table("portafolio").delete().eq("id", asset_id).eq("user_id", uid()).execute()
-                if st.session_state.editing_asset_id == asset_id:
-                    st.session_state.editing_asset_id = None
+                if st.session_state.editing_asset_id    == asset_id: st.session_state.editing_asset_id    = None
+                if st.session_state.withdrawing_asset_id == asset_id: st.session_state.withdrawing_asset_id = None
                 st.rerun()
 
+        # ── Panel de retiro ──────────────────────────────────────────────
+        if withdrawing:
+            saldo_act = float(r["cantidad"])
+            with st.form(key=f"form_ret_port_{asset_id}", clear_on_submit=True):
+                st.markdown(f'<p style="color:#322b49;font-size:12px;font-weight:700;margin:0 0 8px;">Retirar de {r["nombre"]} — disponible: <b>{cop(saldo_act)}</b></p>', unsafe_allow_html=True)
+                ret_monto = st.number_input(
+                    "Monto a retirar ($)", min_value=0.0, max_value=saldo_act,
+                    value=None, placeholder="0", step=1000.0, format="%.0f",
+                    key=f"ret_monto_{asset_id}"
+                )
+                r1, r2 = st.columns(2)
+                with r1:
+                    confirmar = st.form_submit_button("Retirar", use_container_width=True)
+                with r2:
+                    cancelar_ret = st.form_submit_button("Cancelar", use_container_width=True)
+
+                if confirmar:
+                    if not ret_monto or ret_monto <= 0:
+                        st.error("Ingresa un monto válido.")
+                    elif ret_monto > saldo_act:
+                        st.error(f"No puedes retirar más de {cop(saldo_act)}.")
+                    else:
+                        nuevo_val = round(saldo_act - ret_monto, 2)
+                        # Actualizar portafolio
+                        sb().table("portafolio").update({"cantidad": nuevo_val}).eq("id", asset_id).eq("user_id", uid()).execute()
+                        # Registrar ingreso en transacciones
+                        sb().table("transacciones").insert({
+                            "fecha": str(date.today()), "tipo": "Ingreso",
+                            "categoria": "Portafolio",
+                            "descripcion": f"Retiro de {r['nombre']}",
+                            "monto": ret_monto, "cuenta": "Cuenta bancaria", "user_id": uid()
+                        }).execute()
+                        st.session_state.withdrawing_asset_id = None
+                        if nuevo_val <= 0:
+                            # Marcar para confirmar eliminación
+                            st.session_state[f"confirm_del_port_{asset_id}"] = True
+                        st.rerun()
+                if cancelar_ret:
+                    st.session_state.withdrawing_asset_id = None
+                    st.rerun()
+
+        # ── Confirmar eliminación si el activo quedó en 0 ────────────────
+        if st.session_state.get(f"confirm_del_port_{asset_id}"):
+            st.warning(f"**{r['nombre']}** quedó en $0. ¿Deseas eliminarlo del portafolio?")
+            cd1, cd2 = st.columns(2)
+            with cd1:
+                if st.button("Sí, eliminar", key=f"confirm_yes_port_{asset_id}", use_container_width=True):
+                    sb().table("portafolio").delete().eq("id", asset_id).eq("user_id", uid()).execute()
+                    del st.session_state[f"confirm_del_port_{asset_id}"]
+                    st.rerun()
+            with cd2:
+                if st.button("No, conservar", key=f"confirm_no_port_{asset_id}", use_container_width=True):
+                    del st.session_state[f"confirm_del_port_{asset_id}"]
+                    st.rerun()
+
+        # ── Panel de edición ─────────────────────────────────────────────
         if editing:
             with st.form(key=f"form_edit_port_{asset_id}", clear_on_submit=False):
                 nuevo_valor = st.number_input(

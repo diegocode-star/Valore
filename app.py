@@ -883,8 +883,10 @@ def page_transacciones():
         cuenta_val = r["cuenta"] if pd.notna(r.get("cuenta")) else "Efectivo"
         cuenta_ico = CUENTA_ICONS.get(cuenta_val, "🏷️")
         flecha     = "→" if is_income else "←"
+        tx_id      = int(r["id"])
+        editing    = st.session_state.get("editing_tx_id") == tx_id
 
-        col_info, col_del = st.columns([11, 1])
+        col_info, col_edit, col_del = st.columns([10, 1, 1])
         with col_info:
             st.markdown(f"""
             <div style="background:#FFFFFF;border-radius:16px;padding:10px 14px;
@@ -899,10 +901,53 @@ def page_transacciones():
               </div>
               <p style="color:{color};font-size:14px;font-weight:600;margin:0;flex-shrink:0;">{sign}{cop(r["monto"])}</p>
             </div>""", unsafe_allow_html=True)
-        with col_del:
-            if st.button("✕", key=f"del_{r['id']}", type="secondary", use_container_width=True, help="Eliminar"):
-                sb().table("transacciones").delete().eq("id", int(r["id"])).eq("user_id", uid()).execute()
+        with col_edit:
+            if st.button("✏️", key=f"edit_{tx_id}", type="secondary", use_container_width=True, help="Editar"):
+                if editing:
+                    del st.session_state["editing_tx_id"]
+                else:
+                    st.session_state["editing_tx_id"] = tx_id
                 st.rerun()
+        with col_del:
+            if st.button("✕", key=f"del_{tx_id}", type="secondary", use_container_width=True, help="Eliminar"):
+                sb().table("transacciones").delete().eq("id", tx_id).eq("user_id", uid()).execute()
+                if st.session_state.get("editing_tx_id") == tx_id:
+                    del st.session_state["editing_tx_id"]
+                st.rerun()
+
+        if editing:
+            cats_edit = CATEGORIAS_GASTO if r["tipo"] == "Gasto" else CATEGORIAS_INGRESO
+            cat_idx   = cats_edit.index(r["categoria"]) if r["categoria"] in cats_edit else 0
+            cta_idx   = CUENTAS.index(cuenta_val) if cuenta_val in CUENTAS else 0
+            with st.form(key=f"form_edit_{tx_id}", clear_on_submit=False):
+                st.markdown('<p style="color:#322b49;font-size:12px;font-weight:700;margin:0 0 8px;">Editar transacción</p>', unsafe_allow_html=True)
+                ec1, ec2 = st.columns(2)
+                with ec1:
+                    e_fecha = st.date_input("Fecha", value=date.fromisoformat(r["fecha"]), key=f"ef_{tx_id}")
+                with ec2:
+                    e_cat = st.selectbox("Categoría", cats_edit, index=cat_idx, key=f"ec_{tx_id}")
+                e_cuenta = st.selectbox("Cuenta", CUENTAS, index=cta_idx, key=f"ect_{tx_id}")
+                e_desc   = st.text_input("Descripción", value=r["descripcion"] or "", key=f"ed_{tx_id}")
+                e_monto  = st.number_input("Monto ($)", min_value=0.0, value=float(r["monto"]),
+                                           step=1000.0, format="%.0f", key=f"em_{tx_id}")
+                sc1, sc2 = st.columns(2)
+                with sc1:
+                    guardar = st.form_submit_button("Guardar", use_container_width=True)
+                with sc2:
+                    cancelar = st.form_submit_button("Cancelar", use_container_width=True)
+                if guardar:
+                    if not e_monto or e_monto <= 0:
+                        st.error("El monto debe ser mayor a 0.")
+                    else:
+                        sb().table("transacciones").update({
+                            "fecha": str(e_fecha), "categoria": e_cat,
+                            "cuenta": e_cuenta, "descripcion": e_desc, "monto": e_monto,
+                        }).eq("id", tx_id).eq("user_id", uid()).execute()
+                        del st.session_state["editing_tx_id"]
+                        st.rerun()
+                if cancelar:
+                    del st.session_state["editing_tx_id"]
+                    st.rerun()
 
     st.markdown(f'<p style="color:#6b6285;font-size:12px;text-align:center;margin-top:4px;">{len(dff)} transacciones</p>', unsafe_allow_html=True)
 

@@ -780,8 +780,6 @@ def page_dashboard():
         rows_html += tx_row(icon, r["categoria"], r["descripcion"], r["fecha"], r["monto"], r["tipo"] == "Ingreso")
     st.markdown(card_wrap(rows_html, "0.6rem 1.2rem"), unsafe_allow_html=True)
 
-    consilia_section(df, ingresos, gastos, balance)
-
 
 def page_transacciones():
     st.markdown(section_title("Nueva transacción"), unsafe_allow_html=True)
@@ -995,33 +993,45 @@ def page_portafolio():
         st.session_state.editing_asset_id = None
 
     for _, r in df.iterrows():
-        icon = CAT_ICONS.get(r["tipo"], "💎")
-        col_info, col_btn = st.columns([9, 1])
+        asset_id = int(r["id"])
+        icon     = CAT_ICONS.get(r["tipo"], "💎")
+        editing  = st.session_state.editing_asset_id == asset_id
+
+        col_info, col_edit, col_del = st.columns([9, 1, 1])
         with col_info:
             st.markdown(card_wrap(asset_row(icon, r["nombre"], r["tipo"], r["cantidad"]), "0 1.2rem"), unsafe_allow_html=True)
-        with col_btn:
+        with col_edit:
             st.markdown("<div style='height:44px'></div>", unsafe_allow_html=True)
-            if st.button("✏️", key=f"edit_port_{r['id']}", help="Editar valor"):
-                st.session_state.editing_asset_id = r["id"]
+            if st.button("✏️", key=f"edit_port_{asset_id}", help="Editar valor"):
+                st.session_state.editing_asset_id = None if editing else asset_id
+                st.rerun()
+        with col_del:
+            st.markdown("<div style='height:44px'></div>", unsafe_allow_html=True)
+            if st.button("✕", key=f"del_port_{asset_id}", help="Eliminar activo"):
+                sb().table("portafolio").delete().eq("id", asset_id).eq("user_id", uid()).execute()
+                if st.session_state.editing_asset_id == asset_id:
+                    st.session_state.editing_asset_id = None
                 st.rerun()
 
-        if st.session_state.editing_asset_id == r["id"]:
-            with st.container():
+        if editing:
+            with st.form(key=f"form_edit_port_{asset_id}", clear_on_submit=False):
                 nuevo_valor = st.number_input(
                     f"Nuevo valor para {r['nombre']} ($)",
                     min_value=0.0, value=float(r["cantidad"]),
-                    step=1000.0, format="%.0f", key=f"val_port_{r['id']}"
+                    step=1000.0, format="%.0f", key=f"val_port_{asset_id}"
                 )
-                c1, c2 = st.columns(2)
-                with c1:
-                    if st.button("💾 Guardar", key=f"save_port_{r['id']}", use_container_width=True):
-                        sb().table("portafolio").update({"cantidad": nuevo_valor}).eq("id", int(r["id"])).eq("user_id", uid()).execute()
-                        st.session_state.editing_asset_id = None
-                        st.rerun()
-                with c2:
-                    if st.button("Cancelar", key=f"cancel_port_{r['id']}", use_container_width=True):
-                        st.session_state.editing_asset_id = None
-                        st.rerun()
+                s1, s2 = st.columns(2)
+                with s1:
+                    guardar = st.form_submit_button("💾 Guardar", use_container_width=True)
+                with s2:
+                    cancelar = st.form_submit_button("Cancelar", use_container_width=True)
+                if guardar:
+                    sb().table("portafolio").update({"cantidad": nuevo_valor}).eq("id", asset_id).eq("user_id", uid()).execute()
+                    st.session_state.editing_asset_id = None
+                    st.rerun()
+                if cancelar:
+                    st.session_state.editing_asset_id = None
+                    st.rerun()
 
     df_tipo = df.groupby("tipo")["cantidad"].sum().reset_index()
     fig = go.Figure(go.Bar(
@@ -1038,13 +1048,6 @@ def page_portafolio():
         showlegend=False,
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-    with st.expander("Eliminar activo"):
-        opciones = {f"{r['nombre']} · {r['tipo']} (#{r['id']})": r["id"] for _, r in df.iterrows()}
-        sel = st.selectbox("Selecciona", list(opciones.keys()), key="del_activo")
-        if st.button("Eliminar activo", key="btn_del_activo"):
-            sb().table("portafolio").delete().eq("id", int(opciones[sel])).eq("user_id", uid()).execute()
-            st.rerun()
 
 
 def page_metas():
@@ -1101,31 +1104,39 @@ def page_metas():
 
     st.markdown(section_title("Mis metas"), unsafe_allow_html=True)
     for _, r in df.iterrows():
+        meta_id      = int(r["id"])
+        adding_funds = st.session_state.get("adding_funds_meta_id") == meta_id
+
         st.markdown(meta_card(r["emoji"], r["nombre"], r["actual"], r["objetivo"], r["fecha_limite"]), unsafe_allow_html=True)
 
-    with st.expander("Agregar fondos a una meta"):
-        nombres = {r["nombre"]: r["id"] for _, r in df.iterrows()}
-        sel_meta  = st.selectbox("Meta", list(nombres.keys()), key="sel_meta")
-        add_monto = st.number_input("Monto a agregar ($)", min_value=0.0, value=None,
-                                    placeholder="0", step=10000.0, format="%.0f", key="add_monto")
-        if st.button("Agregar fondos", key="btn_add_funds"):
-            if not add_monto or add_monto <= 0:
-                st.error("Ingresa un monto válido.")
-            else:
-                meta_resp = sb().table("metas").select("actual, objetivo").eq("id", int(nombres[sel_meta])).eq("user_id", uid()).execute()
-                if meta_resp.data:
-                    m = meta_resp.data[0]
-                    nuevo_actual = min(float(m["actual"]) + add_monto, float(m["objetivo"]))
-                    sb().table("metas").update({"actual": nuevo_actual}).eq("id", int(nombres[sel_meta])).eq("user_id", uid()).execute()
-                st.success(f"+{cop(add_monto)} agregado a '{sel_meta}'.")
+        ca, cb = st.columns(2)
+        with ca:
+            lbl_funds = "✕ Cerrar" if adding_funds else "💰 Agregar fondos"
+            if st.button(lbl_funds, key=f"show_funds_meta_{meta_id}", use_container_width=True):
+                st.session_state["adding_funds_meta_id"] = None if adding_funds else meta_id
+                st.rerun()
+        with cb:
+            if st.button("🗑 Eliminar meta", key=f"del_meta_{meta_id}", use_container_width=True):
+                sb().table("metas").delete().eq("id", meta_id).eq("user_id", uid()).execute()
+                if st.session_state.get("adding_funds_meta_id") == meta_id:
+                    st.session_state["adding_funds_meta_id"] = None
                 st.rerun()
 
-    with st.expander("Eliminar meta"):
-        opciones = {f"{r['emoji']} {r['nombre']}": r["id"] for _, r in df.iterrows()}
-        sel = st.selectbox("Selecciona", list(opciones.keys()), key="del_meta")
-        if st.button("Eliminar meta", key="btn_del_meta"):
-            sb().table("metas").delete().eq("id", int(opciones[sel])).eq("user_id", uid()).execute()
-            st.rerun()
+        if adding_funds:
+            with st.form(key=f"form_funds_meta_{meta_id}", clear_on_submit=True):
+                add_monto = st.number_input(
+                    "Monto a agregar ($)", min_value=0.0, value=None,
+                    placeholder="0", step=10000.0, format="%.0f",
+                    key=f"funds_monto_meta_{meta_id}"
+                )
+                if st.form_submit_button("Agregar fondos", use_container_width=True):
+                    if not add_monto or add_monto <= 0:
+                        st.error("Ingresa un monto válido.")
+                    else:
+                        nuevo_actual = min(float(r["actual"]) + add_monto, float(r["objetivo"]))
+                        sb().table("metas").update({"actual": nuevo_actual}).eq("id", meta_id).eq("user_id", uid()).execute()
+                        st.session_state["adding_funds_meta_id"] = None
+                        st.rerun()
 
 
 def page_deudas():
@@ -1186,12 +1197,16 @@ def page_deudas():
 
     st.markdown(section_title("Mis deudas"), unsafe_allow_html=True)
     for _, r in df.iterrows():
-        fecha_fin, total_int = proyectar_deuda(r["saldo"], r["tasa_interes"], r["pago_minimo"])
-        st.markdown(debt_card(r["nombre"], r["tipo"], r["deuda_inicial"], r["saldo"],
+        deuda_id  = int(r["id"])
+        saldo_val = float(r["saldo"])
+        paying    = st.session_state.get("paying_deuda_id") == deuda_id
+
+        fecha_fin, total_int = proyectar_deuda(saldo_val, r["tasa_interes"], r["pago_minimo"])
+        st.markdown(debt_card(r["nombre"], r["tipo"], r["deuda_inicial"], saldo_val,
                               r["tasa_interes"], r["pago_minimo"], fecha_fin, total_int),
                     unsafe_allow_html=True)
 
-        pagos_resp = sb().table("pagos_deuda").select("*").eq("deuda_id", int(r["id"])).order("fecha", desc=True).limit(5).execute()
+        pagos_resp = sb().table("pagos_deuda").select("*").eq("deuda_id", deuda_id).order("fecha", desc=True).limit(5).execute()
         pagos = _df(pagos_resp)
         if not pagos.empty:
             hist_html = ""
@@ -1207,40 +1222,60 @@ def page_deudas():
                 "0.9rem 1.2rem"
             ), unsafe_allow_html=True)
 
-    with st.expander("Registrar un pago"):
-        deudas_map   = {r["nombre"]: (r["id"], r["saldo"]) for _, r in df.iterrows()}
-        sel_deuda    = st.selectbox("Deuda", list(deudas_map.keys()), key="sel_deuda_pago")
-        did, saldo_s = deudas_map[sel_deuda]
-        st.markdown(f'<p style="color:#C0392B;font-size:13px;margin:4px 0 12px;">Saldo actual: <b>{cop(saldo_s)}</b></p>', unsafe_allow_html=True)
-        c1, c2 = st.columns(2)
-        with c1:
-            pago_fecha = st.date_input("Fecha del pago", value=date.today(), key="pago_fecha")
-        with c2:
-            pago_monto = st.number_input("Monto ($)", min_value=0.0, value=None,
-                                         placeholder="0", step=10000.0, format="%.0f", key="pago_monto")
-        pago_nota = st.text_input("Nota (opcional)", placeholder="Pago mensual, abono extra…", key="pago_nota")
-        if st.button("Registrar pago", key="btn_pago"):
-            if not pago_monto or pago_monto <= 0:
-                st.error("Ingresa un monto válido.")
-            elif pago_monto > saldo_s:
-                st.error(f"El pago ({cop(pago_monto)}) supera el saldo ({cop(saldo_s)}).")
-            else:
-                nuevo_saldo = round(saldo_s - pago_monto, 2)
-                sb().table("pagos_deuda").insert({
-                    "deuda_id": int(did), "fecha": str(pago_fecha),
-                    "monto": pago_monto, "nota": pago_nota or None
-                }).execute()
-                sb().table("deudas").update({"saldo": nuevo_saldo}).eq("id", int(did)).eq("user_id", uid()).execute()
-                st.success(f"Pago de {cop(pago_monto)} registrado. Saldo: {cop(nuevo_saldo)}")
+        cp, cd = st.columns(2)
+        with cp:
+            lbl_pago = "✕ Cerrar" if paying else "💳 Registrar pago"
+            if st.button(lbl_pago, key=f"show_pay_deuda_{deuda_id}", use_container_width=True):
+                st.session_state["paying_deuda_id"] = None if paying else deuda_id
+                st.rerun()
+        with cd:
+            if st.button("🗑 Eliminar deuda", key=f"del_deuda_{deuda_id}", use_container_width=True):
+                sb().table("pagos_deuda").delete().eq("deuda_id", deuda_id).execute()
+                sb().table("deudas").delete().eq("id", deuda_id).eq("user_id", uid()).execute()
+                if st.session_state.get("paying_deuda_id") == deuda_id:
+                    st.session_state["paying_deuda_id"] = None
                 st.rerun()
 
-    with st.expander("Eliminar deuda"):
-        opciones = {r["nombre"]: r["id"] for _, r in df.iterrows()}
-        sel = st.selectbox("Selecciona", list(opciones.keys()), key="del_deuda")
-        if st.button("Eliminar deuda", key="btn_del_deuda"):
-            sb().table("pagos_deuda").delete().eq("deuda_id", int(opciones[sel])).execute()
-            sb().table("deudas").delete().eq("id", int(opciones[sel])).eq("user_id", uid()).execute()
-            st.rerun()
+        if paying:
+            with st.form(key=f"form_pay_deuda_{deuda_id}", clear_on_submit=True):
+                pc1, pc2 = st.columns(2)
+                with pc1:
+                    pago_fecha = st.date_input("Fecha", value=date.today(), key=f"pago_fecha_{deuda_id}")
+                with pc2:
+                    pago_monto = st.number_input(
+                        "Monto ($)", min_value=0.0, value=None,
+                        placeholder="0", step=10000.0, format="%.0f",
+                        key=f"pago_monto_{deuda_id}"
+                    )
+                pago_nota = st.text_input("Nota (opcional)", placeholder="Pago mensual, abono extra…",
+                                          key=f"pago_nota_{deuda_id}")
+                if st.form_submit_button("Registrar pago", use_container_width=True):
+                    if not pago_monto or pago_monto <= 0:
+                        st.error("Ingresa un monto válido.")
+                    elif pago_monto > saldo_val:
+                        st.error(f"El pago ({cop(pago_monto)}) supera el saldo ({cop(saldo_val)}).")
+                    else:
+                        nuevo_saldo = round(saldo_val - pago_monto, 2)
+                        sb().table("pagos_deuda").insert({
+                            "deuda_id": deuda_id, "fecha": str(pago_fecha),
+                            "monto": pago_monto, "nota": pago_nota or None
+                        }).execute()
+                        sb().table("deudas").update({"saldo": nuevo_saldo}).eq("id", deuda_id).eq("user_id", uid()).execute()
+                        st.session_state["paying_deuda_id"] = None
+                        st.rerun()
+
+
+# ─── Consil.ia Page ───────────────────────────────────────────────────────────
+def page_consilia():
+    resp = sb().table("transacciones").select("*").eq("user_id", uid()).order("fecha", desc=True).execute()
+    df = _df(resp)
+    if df.empty:
+        ingresos, gastos, balance = 0.0, 0.0, 0.0
+    else:
+        ingresos = float(df[df["tipo"] == "Ingreso"]["monto"].sum())
+        gastos   = float(df[df["tipo"] == "Gasto"]["monto"].sum())
+        balance  = ingresos - gastos
+    consilia_section(df, ingresos, gastos, balance)
 
 
 # ─── Admin Page ───────────────────────────────────────────────────────────────
@@ -1369,7 +1404,7 @@ else:
     st.markdown("<div style='margin-bottom:1rem;'></div>", unsafe_allow_html=True)
 
     is_admin = st.session_state.get("user_email", "").lower() == ADMIN_EMAIL
-    tab_names = ["Dashboard", "Transacciones", "Portafolio", "Metas", "Deudas"]
+    tab_names = ["Dashboard", "Transacciones", "Portafolio", "Metas", "✨ Consil.ia", "Deudas"]
     if is_admin:
         tab_names.append("Admin")
 
@@ -1378,6 +1413,7 @@ else:
     with tabs[1]: page_transacciones()
     with tabs[2]: page_portafolio()
     with tabs[3]: page_metas()
-    with tabs[4]: page_deudas()
+    with tabs[4]: page_consilia()
+    with tabs[5]: page_deudas()
     if is_admin:
-        with tabs[5]: page_admin()
+        with tabs[6]: page_admin()

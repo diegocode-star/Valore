@@ -18,7 +18,10 @@ from supabase import create_client
 CATEGORIAS_INGRESO = ["Salario", "Préstamo", "Retiro de portafolio", "Otro ingreso"]
 CATEGORIAS_GASTO   = ["Alimentación", "Restaurantes", "Transporte", "Vivienda", "Salud",
                       "Educación", "Entretenimiento", "Ropa", "Servicios", "Deudas", "Portafolio", "Otro gasto"]
-TIPOS_ACTIVO       = ["Acciones", "Crypto", "Ahorro", "Inmuebles", "Bonos", "Otro"]
+TIPOS_ACTIVO       = ["Acciones", "Crypto", "CDT", "Cuenta de ahorros", "Fondo de inversión",
+                      "Bonos", "Inmuebles", "Ahorro", "Otro"]
+TIPOS_RENTA_FIJA   = {"CDT", "Cuenta de ahorros", "Bonos"}
+MODALIDADES_INT    = ["Compuesto", "Simple"]
 TIPOS_DEUDA        = ["Tarjeta de crédito", "Préstamo personal", "Hipoteca", "Auto", "Estudiantil", "Otro"]
 CUENTAS            = ["Efectivo", "Cuenta bancaria", "Tarjeta de crédito", "Billetera digital", "Otro"]
 TIPOS_CUENTA       = ["Cuenta bancaria", "Billetera digital", "Efectivo", "Tarjeta de crédito", "Inversiones", "Otro"]
@@ -38,7 +41,8 @@ CAT_ICONS = {
     "Alimentación":"🛒","Restaurantes":"🍽️","Transporte":"🚗","Vivienda":"🏠","Salud":"💊","Educación":"📚",
     "Entretenimiento":"🎬","Ropa":"👗","Servicios":"⚡","Deudas":"💳","Portafolio":"📈","Otro gasto":"📦",
     "Retiro de portafolio":"📉",
-    "Acciones":"📊","Crypto":"₿","Ahorro":"🏦","Inmuebles":"🏡","Bonos":"📜","Otro":"💎",
+    "Acciones":"📊","Crypto":"₿","CDT":"🏛️","Cuenta de ahorros":"💰",
+    "Fondo de inversión":"💼","Ahorro":"🏦","Inmuebles":"🏡","Bonos":"📜","Otro":"💎",
 }
 DEUDA_ICONS = {
     "Tarjeta de crédito":"💳","Préstamo personal":"🤝","Hipoteca":"🏠",
@@ -108,7 +112,12 @@ CREATE TABLE IF NOT EXISTS portafolio (
     id BIGSERIAL PRIMARY KEY,
     nombre TEXT NOT NULL, tipo TEXT NOT NULL,
     cantidad DOUBLE PRECISION NOT NULL, valor_unitario DOUBLE PRECISION NOT NULL,
-    fecha TEXT NOT NULL, user_id BIGINT NOT NULL DEFAULT 1
+    fecha TEXT NOT NULL,
+    tasa_interes DOUBLE PRECISION,
+    plazo INTEGER,
+    fecha_vencimiento TEXT,
+    modalidad_interes TEXT DEFAULT 'Compuesto',
+    user_id BIGINT NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS deudas (
     id BIGSERIAL PRIMARY KEY,
@@ -140,6 +149,10 @@ ALTER TABLE transacciones ADD COLUMN IF NOT EXISTS moneda TEXT DEFAULT 'COP';
 ALTER TABLE transacciones ADD COLUMN IF NOT EXISTS cuenta_id BIGINT;
 ALTER TABLE deudas ADD COLUMN IF NOT EXISTS cupo_maximo DOUBLE PRECISION;
 ALTER TABLE deudas ADD COLUMN IF NOT EXISTS num_cuotas INTEGER;
+ALTER TABLE portafolio ADD COLUMN IF NOT EXISTS tasa_interes DOUBLE PRECISION;
+ALTER TABLE portafolio ADD COLUMN IF NOT EXISTS plazo INTEGER;
+ALTER TABLE portafolio ADD COLUMN IF NOT EXISTS fecha_vencimiento TEXT;
+ALTER TABLE portafolio ADD COLUMN IF NOT EXISTS modalidad_interes TEXT DEFAULT 'Compuesto';
 CREATE TABLE IF NOT EXISTS cuentas (
     id BIGSERIAL PRIMARY KEY,
     nombre TEXT NOT NULL, tipo TEXT NOT NULL,
@@ -171,7 +184,9 @@ def init_db():
         st.stop()
 
     # Mostrar aviso de migración si faltan columnas nuevas
-    if not _has_column("transacciones", "moneda") or not _has_column("deudas", "cupo_maximo"):
+    if (not _has_column("transacciones", "moneda") or
+            not _has_column("deudas", "cupo_maximo") or
+            not _has_column("portafolio", "tasa_interes")):
         with st.sidebar:
             st.warning("🔧 **Actualización pendiente**")
             st.markdown("Ejecuta este SQL en el [Editor de Supabase](https://supabase.com/dashboard/project/vyhlfosmnbetiohtcxbp/sql/new):")
@@ -226,6 +241,14 @@ def calcular_cuota(saldo, tasa_anual, num_cuotas):
     if tasa_m > 0:
         return saldo * tasa_m / (1 - (1 + tasa_m) ** (-num_cuotas))
     return saldo / num_cuotas
+
+def calcular_rendimiento_rf(capital, tasa_anual, dias, modalidad="Compuesto"):
+    """Retorna los intereses acumulados para un activo de renta fija."""
+    if dias <= 0 or tasa_anual <= 0 or capital <= 0:
+        return 0.0
+    if modalidad == "Compuesto":
+        return capital * ((1 + tasa_anual / 100) ** (dias / 365) - 1)
+    return capital * (tasa_anual / 100) * (dias / 365)
 
 def proyectar_deuda(saldo, tasa_anual, pago_minimo):
     if pago_minimo <= 0 or saldo <= 0:
@@ -432,6 +455,90 @@ def asset_row(icon, nombre, tipo, valor):
         <p style="color:#6b6285;font-size:12px;margin:2px 0 0;">{tipo}</p>
       </div>
       <p style="color:#4A7C59;font-size:14px;font-weight:600;margin:0;">{cop(valor)}</p>
+    </div>"""
+
+def renta_fija_card(nombre, tipo, capital, tasa_anual, fecha_inicio_str, fecha_venc_str, modalidad):
+    today = date.today()
+    icon  = CAT_ICONS.get(tipo, "📜")
+    tasa_s = f"{tasa_anual:.2f}% E.A." if modalidad == "Compuesto" else f"{tasa_anual:.2f}% anual simple"
+    try:
+        f_inicio = date.fromisoformat(str(fecha_inicio_str))
+    except (ValueError, TypeError):
+        f_inicio = today
+    f_venc = None
+    try:
+        if fecha_venc_str:
+            f_venc = date.fromisoformat(str(fecha_venc_str))
+    except (ValueError, TypeError):
+        pass
+
+    dias_trans = max((today - f_inicio).days, 0)
+    intereses  = calcular_rendimiento_rf(capital, tasa_anual, dias_trans, modalidad)
+    valor_hoy  = capital + intereses
+
+    if f_venc:
+        dias_total = max((f_venc - f_inicio).days, 1)
+        valor_venc = capital + calcular_rendimiento_rf(capital, tasa_anual, dias_total, modalidad)
+        dias_rest  = (f_venc - today).days
+        vencido    = dias_rest < 0
+        pct_time   = min(dias_trans / dias_total, 1.0)
+        bar_color  = "#C0392B" if vencido else "#b78a00"
+        tiempo_s   = (f"Vencido hace {abs(dias_rest)} día(s)" if vencido
+                      else f"{dias_rest} día(s) restantes · vence {f_venc.strftime('%d/%m/%Y')}")
+    else:
+        dias_total = 365
+        valor_venc = capital + calcular_rendimiento_rf(capital, tasa_anual, 365, modalidad)
+        vencido    = False
+        pct_time   = min(dias_trans / 365, 1.0)
+        bar_color  = "#4A7C59"
+        tiempo_s   = f"{dias_trans} día(s) invertido(s) · Sin fecha de vencimiento"
+
+    bar_w = int(pct_time * 100)
+    vencido_html = ""
+    if vencido and f_venc:
+        vencido_html = (
+            f'<div style="background:rgba(183,138,0,0.12);border:1.5px solid rgba(183,138,0,0.5);'
+            f'border-radius:10px;padding:8px 12px;margin-bottom:12px;">'
+            f'<p style="color:#b78a00;font-size:12px;font-weight:700;margin:0;">'
+            f'⏰ Este {tipo} venció el {f_venc.strftime("%d/%m/%Y")}. ¿Ya lo renovaste?'
+            f'</p></div>'
+        )
+    intereses_label = f"+{cop(intereses)}" if intereses >= 0 else cop(intereses)
+    return f"""
+    <div style="background:#FFFFFF;border-radius:20px;padding:1.3rem 1.5rem;
+                border:1px solid rgba(74,124,89,0.15);margin-bottom:4px;
+                box-shadow:0 2px 16px rgba(0,0,0,0.05);">
+      {vencido_html}
+      <div style="display:flex;align-items:center;margin-bottom:12px;">
+        <span style="font-size:20px;background:#F5F0E8;width:44px;height:44px;border-radius:14px;
+                     display:inline-flex;align-items:center;justify-content:center;margin-right:12px;flex-shrink:0;">{icon}</span>
+        <div style="flex:1;">
+          <p style="color:#1c1829;font-size:15px;font-weight:600;margin:0;">{nombre}</p>
+          <p style="color:#6b6285;font-size:12px;margin:2px 0 0;">{tipo} · {tasa_s} · {modalidad}</p>
+        </div>
+        <div style="text-align:right;">
+          <p style="color:#4A7C59;font-size:18px;font-weight:700;margin:0;">{cop(valor_hoy)}</p>
+          <p style="color:#6b6285;font-size:11px;margin:2px 0 0;">valor actual</p>
+        </div>
+      </div>
+      <div style="background:#F5F0E8;border-radius:6px;height:6px;overflow:hidden;margin-bottom:5px;">
+        <div style="width:{bar_w}%;height:100%;border-radius:6px;background:{bar_color};transition:width 0.4s;"></div>
+      </div>
+      <p style="color:#6b6285;font-size:11px;margin:0 0 14px;">{tiempo_s}</p>
+      <div style="display:flex;justify-content:space-between;">
+        <div>
+          <p style="color:#5c5474;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;margin:0;">Capital</p>
+          <p style="color:#1c1829;font-size:13px;font-weight:600;margin:3px 0 0;">{cop(capital)}</p>
+        </div>
+        <div style="text-align:center;">
+          <p style="color:#5c5474;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;margin:0;">Intereses hoy</p>
+          <p style="color:#4A7C59;font-size:13px;font-weight:600;margin:3px 0 0;">{intereses_label}</p>
+        </div>
+        <div style="text-align:right;">
+          <p style="color:#5c5474;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;margin:0;">Al vencimiento</p>
+          <p style="color:#b78a00;font-size:13px;font-weight:600;margin:3px 0 0;">{cop(valor_venc)}</p>
+        </div>
+      </div>
     </div>"""
 
 def debt_card(nombre, tipo, deuda_inicial, saldo, tasa, pago_minimo, fecha_fin=None, total_int=None, cupo_maximo=None, meses_restantes=None):
@@ -1218,10 +1325,28 @@ def page_transacciones():
     st.markdown(f'<p style="color:#6b6285;font-size:12px;text-align:center;margin-top:4px;">{len(dff)} transacciones</p>', unsafe_allow_html=True)
 
 
+def _valor_actual_activo(r):
+    """Valor actual de un activo incluyendo rendimientos para renta fija."""
+    capital = float(r.get("cantidad", 0))
+    tipo    = r.get("tipo", "")
+    tasa    = float(r.get("tasa_interes") or 0)
+    if tipo not in TIPOS_RENTA_FIJA or tasa <= 0:
+        return capital
+    try:
+        f_inicio = date.fromisoformat(str(r.get("fecha") or date.today()))
+    except (ValueError, TypeError):
+        return capital
+    dias      = max((date.today() - f_inicio).days, 0)
+    modalidad = r.get("modalidad_interes") or "Compuesto"
+    return capital + calcular_rendimiento_rf(capital, tasa, dias, modalidad)
+
+
 def page_portafolio():
     resp = sb().table("portafolio").select("*").eq("user_id", uid()).order("id", desc=True).execute()
     df   = _df(resp)
-    total = df["cantidad"].sum() if not df.empty else 0
+
+    # Total incluye rendimientos de renta fija
+    total = sum(_valor_actual_activo(r) for _, r in df.iterrows()) if not df.empty else 0
 
     st.markdown(card_wrap(f"""
       <p style="color:#5c5474;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin:0 0 8px;font-weight:600;">Valor total del portafolio</p>
@@ -1229,26 +1354,60 @@ def page_portafolio():
     """), unsafe_allow_html=True)
 
     st.markdown(section_title("Agregar activo"), unsafe_allow_html=True)
+    # tipo fuera del form para mostrar campos condicionales de renta fija
+    tipo_nuevo   = st.selectbox("Tipo", TIPOS_ACTIVO, key="new_activo_tipo")
+    es_renta_fija = tipo_nuevo in TIPOS_RENTA_FIJA
+
     with st.form("form_activo", clear_on_submit=True):
-        nombre = st.text_input("Nombre del activo", placeholder="Apple, Bitcoin, Fondo…")
+        nombre = st.text_input("Nombre del activo", placeholder="CDT Bancolombia, TES 2026…")
         c1, c2 = st.columns(2)
         with c1:
-            tipo  = st.selectbox("Tipo", TIPOS_ACTIVO)
+            fecha = st.date_input("Fecha de inicio", value=date.today())
         with c2:
-            fecha = st.date_input("Fecha de compra", value=date.today())
-        valor = st.number_input("Valor ($)", min_value=0.0, value=None,
-                                placeholder="0", step=1000.0, format="%.0f")
+            valor = st.number_input("Capital invertido ($)", min_value=0.0, value=None,
+                                    placeholder="0", step=1000.0, format="%.0f")
+        if es_renta_fija:
+            rf1, rf2 = st.columns(2)
+            with rf1:
+                tasa_rf     = st.number_input("Tasa de interés anual (%)", min_value=0.0,
+                                               value=None, placeholder="12.5", step=0.1, format="%.2f")
+                modalidad_rf = st.selectbox("Modalidad", MODALIDADES_INT)
+            with rf2:
+                tiene_venc   = tipo_nuevo in {"CDT", "Bonos"}
+                venc_label   = "Fecha de vencimiento" + (" *" if tiene_venc else " (opcional)")
+                fecha_venc_rf = st.date_input(venc_label, value=None)
+        else:
+            tasa_rf = None; modalidad_rf = "Compuesto"; fecha_venc_rf = None
+
         ok = st.form_submit_button("Agregar al portafolio", use_container_width=True)
         if ok:
+            tipo_val = st.session_state.get("new_activo_tipo", tipo_nuevo)
             if not nombre:
                 st.warning("Dale un nombre a tu activo para identificarlo.")
             elif not valor or valor <= 0:
-                st.warning("El valor debe ser mayor a 0.")
+                st.warning("El capital invertido debe ser mayor a 0.")
+            elif tipo_val in TIPOS_RENTA_FIJA and (not tasa_rf or tasa_rf <= 0):
+                st.warning("Ingresa la tasa de interés anual para este tipo de activo.")
             else:
-                sb().table("portafolio").insert({
-                    "nombre": nombre, "tipo": tipo, "cantidad": valor,
+                plazo_dias = None
+                venc_str   = None
+                if fecha_venc_rf:
+                    plazo_dias = max((fecha_venc_rf - fecha).days, 0)
+                    venc_str   = str(fecha_venc_rf)
+                payload = {
+                    "nombre": nombre, "tipo": tipo_val, "cantidad": valor,
                     "valor_unitario": 1.0, "fecha": str(fecha), "user_id": uid()
-                }).execute()
+                }
+                try:
+                    payload["tasa_interes"]      = float(tasa_rf) if tasa_rf else None
+                    payload["plazo"]             = plazo_dias
+                    payload["fecha_vencimiento"] = venc_str
+                    payload["modalidad_interes"] = modalidad_rf
+                    sb().table("portafolio").insert(payload).execute()
+                except Exception:
+                    payload.pop("tasa_interes", None); payload.pop("plazo", None)
+                    payload.pop("fecha_vencimiento", None); payload.pop("modalidad_interes", None)
+                    sb().table("portafolio").insert(payload).execute()
                 st.success(f"{nombre} agregado al portafolio.")
                 st.rerun()
 
@@ -1263,14 +1422,23 @@ def page_portafolio():
         st.session_state.withdrawing_asset_id = None
 
     for _, r in df.iterrows():
-        asset_id   = int(r["id"])
-        icon       = CAT_ICONS.get(r["tipo"], "💎")
-        editing    = st.session_state.editing_asset_id    == asset_id
+        asset_id    = int(r["id"])
+        icon        = CAT_ICONS.get(r["tipo"], "💎")
+        editing     = st.session_state.editing_asset_id    == asset_id
         withdrawing = st.session_state.withdrawing_asset_id == asset_id
+        tasa_row    = float(r.get("tasa_interes") or 0)
+        es_rf       = r.get("tipo") in TIPOS_RENTA_FIJA and tasa_row > 0
 
         col_info, col_ret, col_edit, col_del = st.columns([8, 1, 1, 1])
         with col_info:
-            st.markdown(card_wrap(asset_row(icon, r["nombre"], r["tipo"], r["cantidad"]), "0 1.2rem"), unsafe_allow_html=True)
+            if es_rf:
+                st.markdown(renta_fija_card(
+                    r["nombre"], r["tipo"], float(r["cantidad"]), tasa_row,
+                    r.get("fecha"), r.get("fecha_vencimiento"),
+                    r.get("modalidad_interes") or "Compuesto"
+                ), unsafe_allow_html=True)
+            else:
+                st.markdown(card_wrap(asset_row(icon, r["nombre"], r["tipo"], r["cantidad"]), "0 1.2rem"), unsafe_allow_html=True)
         with col_ret:
             st.markdown("<div style='height:44px'></div>", unsafe_allow_html=True)
             if st.button("↩", key=f"ret_port_{asset_id}", help="Retirar fondos"):
@@ -1297,7 +1465,7 @@ def page_portafolio():
         if withdrawing:
             saldo_act = float(r["cantidad"])
             with st.form(key=f"form_ret_port_{asset_id}", clear_on_submit=True):
-                st.markdown(f'<p style="color:#322b49;font-size:12px;font-weight:700;margin:0 0 8px;">Retirar de {r["nombre"]} — disponible: <b>{cop(saldo_act)}</b></p>', unsafe_allow_html=True)
+                st.markdown(f'<p style="color:#322b49;font-size:12px;font-weight:700;margin:0 0 8px;">Retirar de {r["nombre"]} — capital: <b>{cop(saldo_act)}</b></p>', unsafe_allow_html=True)
                 ret_monto = st.number_input(
                     "Monto a retirar ($)", min_value=0.0, max_value=saldo_act,
                     value=None, placeholder="0", step=1000.0, format="%.0f",
@@ -1313,12 +1481,10 @@ def page_portafolio():
                     if not ret_monto or ret_monto <= 0:
                         st.warning("Ingresa un monto válido para retirar.")
                     elif ret_monto > saldo_act:
-                        st.warning(f"No puedes retirar más de lo que tienes en el activo ({cop(saldo_act)}).")
+                        st.warning(f"No puedes retirar más del capital ({cop(saldo_act)}).")
                     else:
                         nuevo_val = round(saldo_act - ret_monto, 2)
-                        # Actualizar portafolio
                         sb().table("portafolio").update({"cantidad": nuevo_val}).eq("id", asset_id).eq("user_id", uid()).execute()
-                        # Registrar ingreso en transacciones
                         sb().table("transacciones").insert({
                             "fecha": str(date.today()), "tipo": "Ingreso",
                             "categoria": "Portafolio",
@@ -1327,7 +1493,6 @@ def page_portafolio():
                         }).execute()
                         st.session_state.withdrawing_asset_id = None
                         if nuevo_val <= 0:
-                            # Marcar para confirmar eliminación
                             st.session_state[f"confirm_del_port_{asset_id}"] = True
                         st.rerun()
                 if cancelar_ret:
@@ -1352,7 +1517,7 @@ def page_portafolio():
         if editing:
             with st.form(key=f"form_edit_port_{asset_id}", clear_on_submit=False):
                 nuevo_valor = st.number_input(
-                    f"Nuevo valor para {r['nombre']} ($)",
+                    f"Nuevo capital para {r['nombre']} ($)",
                     min_value=0.0, value=float(r["cantidad"]),
                     step=1000.0, format="%.0f", key=f"val_port_{asset_id}"
                 )

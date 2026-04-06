@@ -902,14 +902,14 @@ def page_transacciones():
               <p style="color:{color};font-size:14px;font-weight:600;margin:0;flex-shrink:0;">{sign}{cop(r["monto"])}</p>
             </div>""", unsafe_allow_html=True)
         with col_edit:
-            if st.button("✏️", key=f"edit_{tx_id}", type="secondary", use_container_width=True, help="Editar"):
+            if st.button("✏️", key=f"edit_trans_{tx_id}", type="secondary", use_container_width=True, help="Editar"):
                 if editing:
                     del st.session_state["editing_tx_id"]
                 else:
                     st.session_state["editing_tx_id"] = tx_id
                 st.rerun()
         with col_del:
-            if st.button("✕", key=f"del_{tx_id}", type="secondary", use_container_width=True, help="Eliminar"):
+            if st.button("✕", key=f"del_trans_{tx_id}", type="secondary", use_container_width=True, help="Eliminar"):
                 sb().table("transacciones").delete().eq("id", tx_id).eq("user_id", uid()).execute()
                 if st.session_state.get("editing_tx_id") == tx_id:
                     del st.session_state["editing_tx_id"]
@@ -919,17 +919,17 @@ def page_transacciones():
             cats_edit = CATEGORIAS_GASTO if r["tipo"] == "Gasto" else CATEGORIAS_INGRESO
             cat_idx   = cats_edit.index(r["categoria"]) if r["categoria"] in cats_edit else 0
             cta_idx   = CUENTAS.index(cuenta_val) if cuenta_val in CUENTAS else 0
-            with st.form(key=f"form_edit_{tx_id}", clear_on_submit=False):
+            with st.form(key=f"form_edit_trans_{tx_id}", clear_on_submit=False):
                 st.markdown('<p style="color:#322b49;font-size:12px;font-weight:700;margin:0 0 8px;">Editar transacción</p>', unsafe_allow_html=True)
                 ec1, ec2 = st.columns(2)
                 with ec1:
-                    e_fecha = st.date_input("Fecha", value=date.fromisoformat(r["fecha"]), key=f"ef_{tx_id}")
+                    e_fecha = st.date_input("Fecha", value=date.fromisoformat(r["fecha"]), key=f"ef_trans_{tx_id}")
                 with ec2:
-                    e_cat = st.selectbox("Categoría", cats_edit, index=cat_idx, key=f"ec_{tx_id}")
-                e_cuenta = st.selectbox("Cuenta", CUENTAS, index=cta_idx, key=f"ect_{tx_id}")
-                e_desc   = st.text_input("Descripción", value=r["descripcion"] or "", key=f"ed_{tx_id}")
+                    e_cat = st.selectbox("Categoría", cats_edit, index=cat_idx, key=f"ec_trans_{tx_id}")
+                e_cuenta = st.selectbox("Cuenta", CUENTAS, index=cta_idx, key=f"ect_trans_{tx_id}")
+                e_desc   = st.text_input("Descripción", value=r["descripcion"] or "", key=f"ed_trans_{tx_id}")
                 e_monto  = st.number_input("Monto ($)", min_value=0.0, value=float(r["monto"]),
-                                           step=1000.0, format="%.0f", key=f"em_{tx_id}")
+                                           step=1000.0, format="%.0f", key=f"em_trans_{tx_id}")
                 sc1, sc2 = st.columns(2)
                 with sc1:
                     guardar = st.form_submit_button("Guardar", use_container_width=True)
@@ -1001,7 +1001,7 @@ def page_portafolio():
             st.markdown(card_wrap(asset_row(icon, r["nombre"], r["tipo"], r["cantidad"]), "0 1.2rem"), unsafe_allow_html=True)
         with col_btn:
             st.markdown("<div style='height:44px'></div>", unsafe_allow_html=True)
-            if st.button("✏️", key=f"edit_{r['id']}", help="Editar valor"):
+            if st.button("✏️", key=f"edit_port_{r['id']}", help="Editar valor"):
                 st.session_state.editing_asset_id = r["id"]
                 st.rerun()
 
@@ -1010,16 +1010,16 @@ def page_portafolio():
                 nuevo_valor = st.number_input(
                     f"Nuevo valor para {r['nombre']} ($)",
                     min_value=0.0, value=float(r["cantidad"]),
-                    step=1000.0, format="%.0f", key=f"val_{r['id']}"
+                    step=1000.0, format="%.0f", key=f"val_port_{r['id']}"
                 )
                 c1, c2 = st.columns(2)
                 with c1:
-                    if st.button("💾 Guardar", key=f"save_{r['id']}", use_container_width=True):
+                    if st.button("💾 Guardar", key=f"save_port_{r['id']}", use_container_width=True):
                         sb().table("portafolio").update({"cantidad": nuevo_valor}).eq("id", int(r["id"])).eq("user_id", uid()).execute()
                         st.session_state.editing_asset_id = None
                         st.rerun()
                 with c2:
-                    if st.button("Cancelar", key=f"cancel_{r['id']}", use_container_width=True):
+                    if st.button("Cancelar", key=f"cancel_port_{r['id']}", use_container_width=True):
                         st.session_state.editing_asset_id = None
                         st.rerun()
 

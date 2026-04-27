@@ -1864,17 +1864,26 @@ def page_deudas():
 CATS_GASTO_FIJO = ["Arriendo", "Servicios", "Suscripciones", "Créditos", "Seguros", "Salud", "Otro"]
 
 def _load_gastos_fijos():
-    resp = sb().table("gastos_fijos").select("*").eq("user_id", uid()).order("dia_vencimiento").execute()
-    return resp.data or []
+    try:
+        resp = sb().table("gastos_fijos").select("*").eq("user_id", uid()).order("dia_vencimiento").execute()
+        return resp.data or []
+    except Exception:
+        return []
 
 def _load_pagos_mes(mes, anio):
     """Devuelve dict {gasto_fijo_id: registro_pago} para el mes/año dado."""
-    ids_resp = sb().table("gastos_fijos").select("id").eq("user_id", uid()).execute()
+    try:
+        ids_resp = sb().table("gastos_fijos").select("id").eq("user_id", uid()).execute()
+    except Exception:
+        return {}
     ids = [r["id"] for r in (ids_resp.data or [])]
     if not ids:
         return {}
-    resp = sb().table("pagos_gastos_fijos").select("*").in_("gasto_fijo_id", ids).eq("mes", mes).eq("anio", anio).execute()
-    return {r["gasto_fijo_id"]: r for r in (resp.data or [])}
+    try:
+        resp = sb().table("pagos_gastos_fijos").select("*").in_("gasto_fijo_id", ids).eq("mes", mes).eq("anio", anio).execute()
+        return {r["gasto_fijo_id"]: r for r in (resp.data or [])}
+    except Exception:
+        return {}
 
 def _ensure_pago(gasto_id, mes, anio):
     """Crea registro de pago si no existe; retorna el registro."""

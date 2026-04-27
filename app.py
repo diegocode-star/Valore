@@ -1861,7 +1861,7 @@ def page_deudas():
 
 
 # ─── Obligaciones Page ────────────────────────────────────────────────────────
-CATS_GASTO_FIJO = ["Arriendo", "Servicios", "Suscripciones", "Créditos", "Seguros", "Otro"]
+CATS_GASTO_FIJO = ["Arriendo", "Servicios", "Suscripciones", "Créditos", "Seguros", "Salud", "Otro"]
 
 def _load_gastos_fijos():
     resp = sb().table("gastos_fijos").select("*").eq("user_id", uid()).order("dia_vencimiento").execute()

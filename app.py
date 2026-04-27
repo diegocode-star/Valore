@@ -1899,17 +1899,15 @@ def _ensure_pago(gasto_id, mes, anio):
 
 def _marcar_gasto_fijo_pagado(gasto_id, mes, anio):
     """Marca un gasto fijo como pagado en el mes actual."""
-    pagos = _load_pagos_mes(mes, anio)
     hoy   = str(date.today())
+    pagos = _load_pagos_mes(mes, anio)
     if gasto_id in pagos:
-        sb().table("pagos_gastos_fijos").update({
-            "pagado": True, "fecha_pago": hoy
-        }).eq("id", pagos[gasto_id]["id"]).execute()
-    else:
-        sb().table("pagos_gastos_fijos").insert({
-            "gasto_fijo_id": gasto_id, "mes": mes, "anio": anio,
-            "pagado": True, "fecha_pago": hoy
-        }).execute()
+        # Eliminar el registro existente y reinsertar con estado pagado
+        sb().table("pagos_gastos_fijos").delete().eq("id", pagos[gasto_id]["id"]).execute()
+    sb().table("pagos_gastos_fijos").insert({
+        "gasto_fijo_id": int(gasto_id), "mes": int(mes), "anio": int(anio),
+        "pagado": True, "fecha_pago": hoy
+    }).execute()
 
 def page_obligaciones():
     hoy   = date.today()
@@ -2011,9 +2009,11 @@ def page_obligaciones():
                                  use_container_width=True):
                         pago_rec = pagos.get(gid)
                         if pago_rec:
-                            sb().table("pagos_gastos_fijos").update({
+                            sb().table("pagos_gastos_fijos").delete().eq("id", pago_rec["id"]).execute()
+                            sb().table("pagos_gastos_fijos").insert({
+                                "gasto_fijo_id": int(gid), "mes": int(mes), "anio": int(anio),
                                 "pagado": False, "fecha_pago": None
-                            }).eq("id", pago_rec["id"]).execute()
+                            }).execute()
                         st.rerun()
 
     # ── Formulario para agregar gasto fijo ───────────────────────────────────

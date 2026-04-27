@@ -1874,12 +1874,9 @@ def _load_pagos_mes(mes, anio):
     """Devuelve dict {gasto_fijo_id: registro_pago} para el mes/año dado."""
     try:
         ids_resp = sb().table("gastos_fijos").select("id").eq("user_id", uid()).execute()
-    except Exception:
-        return {}
-    ids = [r["id"] for r in (ids_resp.data or [])]
-    if not ids:
-        return {}
-    try:
+        ids = [r["id"] for r in (ids_resp.data or [])]
+        if not ids:
+            return {}
         resp = sb().table("pagos_gastos_fijos").select("*").in_("gasto_fijo_id", ids).eq("mes", mes).eq("anio", anio).execute()
         return {r["gasto_fijo_id"]: r for r in (resp.data or [])}
     except Exception:
@@ -1899,15 +1896,17 @@ def _ensure_pago(gasto_id, mes, anio):
 
 def _marcar_gasto_fijo_pagado(gasto_id, mes, anio):
     """Marca un gasto fijo como pagado en el mes actual."""
-    hoy   = str(date.today())
-    pagos = _load_pagos_mes(mes, anio)
-    if gasto_id in pagos:
-        # Eliminar el registro existente y reinsertar con estado pagado
-        sb().table("pagos_gastos_fijos").delete().eq("id", pagos[gasto_id]["id"]).execute()
-    sb().table("pagos_gastos_fijos").insert({
-        "gasto_fijo_id": int(gasto_id), "mes": int(mes), "anio": int(anio),
-        "pagado": True, "fecha_pago": hoy
-    }).execute()
+    try:
+        hoy   = str(date.today())
+        pagos = _load_pagos_mes(mes, anio)
+        if gasto_id in pagos:
+            sb().table("pagos_gastos_fijos").delete().eq("id", pagos[gasto_id]["id"]).execute()
+        sb().table("pagos_gastos_fijos").insert({
+            "gasto_fijo_id": int(gasto_id), "mes": int(mes), "anio": int(anio),
+            "pagado": True, "fecha_pago": hoy
+        }).execute()
+    except Exception as e:
+        st.warning(f"No se pudo marcar como pagado. Verifica que las tablas existen en Supabase. ({e})")
 
 def page_obligaciones():
     hoy   = date.today()
@@ -2007,13 +2006,16 @@ def page_obligaciones():
                 else:
                     if st.button("↩", key=f"desmarcar_{gid}", help="Desmarcar",
                                  use_container_width=True):
-                        pago_rec = pagos.get(gid)
-                        if pago_rec:
-                            sb().table("pagos_gastos_fijos").delete().eq("id", pago_rec["id"]).execute()
-                            sb().table("pagos_gastos_fijos").insert({
-                                "gasto_fijo_id": int(gid), "mes": int(mes), "anio": int(anio),
-                                "pagado": False, "fecha_pago": None
-                            }).execute()
+                        try:
+                            pago_rec = pagos.get(gid)
+                            if pago_rec:
+                                sb().table("pagos_gastos_fijos").delete().eq("id", pago_rec["id"]).execute()
+                                sb().table("pagos_gastos_fijos").insert({
+                                    "gasto_fijo_id": int(gid), "mes": int(mes), "anio": int(anio),
+                                    "pagado": False, "fecha_pago": None
+                                }).execute()
+                        except Exception as e:
+                            st.warning(f"No se pudo desmarcar. ({e})")
                         st.rerun()
 
     # ── Formulario para agregar gasto fijo ───────────────────────────────────
@@ -2214,6 +2216,11 @@ else:
     with tabs[3]: page_metas()
     with tabs[4]: page_consilia()
     with tabs[5]: page_deudas()
-    with tabs[6]: page_obligaciones()
+    with tabs[6]:
+        try:
+            page_obligaciones()
+        except Exception as e:
+            st.warning(f"⚠️ Error en Obligaciones: {e}")
+            st.info("Asegúrate de haber creado las tablas `gastos_fijos` y `pagos_gastos_fijos` en Supabase.")
     if is_admin:
         with tabs[7]: page_admin()

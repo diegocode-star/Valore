@@ -17,7 +17,7 @@ from supabase import create_client
 # ─── Constants ────────────────────────────────────────────────────────────────
 CATEGORIAS_INGRESO = ["Salario", "Préstamo", "Retiro de portafolio", "Otro ingreso"]
 CATEGORIAS_GASTO   = ["Alimentación", "Restaurantes", "Transporte", "Vivienda", "Salud",
-                      "Educación", "Entretenimiento", "Ropa", "Servicios", "Deudas", "Portafolio", "Otro gasto"]
+                      "Educación", "Entretenimiento", "Ropa", "Servicios", "Deudas", "Portafolio", "Obligaciones", "Otro gasto"]
 TIPOS_ACTIVO       = ["Acciones", "Crypto", "CDT", "Cuenta de ahorros", "Fondo de inversión",
                       "Bonos", "Inmuebles", "Ahorro", "Otro"]
 TIPOS_RENTA_FIJA   = {"CDT", "Cuenta de ahorros", "Bonos"}
@@ -39,7 +39,7 @@ CUENTA_ICONS = {
 CAT_ICONS = {
     "Salario":"💼","Préstamo":"🏦","Otro ingreso":"💰",
     "Alimentación":"🛒","Restaurantes":"🍽️","Transporte":"🚗","Vivienda":"🏠","Salud":"💊","Educación":"📚",
-    "Entretenimiento":"🎬","Ropa":"👗","Servicios":"⚡","Deudas":"💳","Portafolio":"📈","Otro gasto":"📦",
+    "Entretenimiento":"🎬","Ropa":"👗","Servicios":"⚡","Deudas":"💳","Portafolio":"📈","Obligaciones":"📋","Otro gasto":"📦",
     "Retiro de portafolio":"📉",
     "Acciones":"📊","Crypto":"₿","CDT":"🏛️","Cuenta de ahorros":"💰",
     "Fondo de inversión":"💼","Ahorro":"🏦","Inmuebles":"🏡","Bonos":"📜","Otro":"💎",
@@ -142,6 +142,23 @@ CREATE TABLE IF NOT EXISTS metas (
     fecha_limite TEXT, emoji TEXT NOT NULL DEFAULT '🎯',
     user_id BIGINT NOT NULL DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS gastos_fijos (
+    id BIGSERIAL PRIMARY KEY,
+    nombre TEXT NOT NULL,
+    categoria TEXT NOT NULL,
+    monto DOUBLE PRECISION NOT NULL,
+    dia_vencimiento INTEGER NOT NULL DEFAULT 1,
+    cuenta TEXT NOT NULL DEFAULT 'Efectivo',
+    user_id BIGINT NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS pagos_gastos_fijos (
+    id BIGSERIAL PRIMARY KEY,
+    gasto_fijo_id BIGINT NOT NULL,
+    mes INTEGER NOT NULL,
+    anio INTEGER NOT NULL,
+    pagado BOOLEAN NOT NULL DEFAULT FALSE,
+    fecha_pago TEXT
+);
 """
 
 _MIGRATION_SQL = """-- Migraciones para versión actual (ejecuta una sola vez en el SQL Editor de Supabase):
@@ -159,6 +176,23 @@ CREATE TABLE IF NOT EXISTS cuentas (
     moneda TEXT NOT NULL DEFAULT 'COP',
     saldo_inicial DOUBLE PRECISION NOT NULL DEFAULT 0,
     user_id BIGINT NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS gastos_fijos (
+    id BIGSERIAL PRIMARY KEY,
+    nombre TEXT NOT NULL,
+    categoria TEXT NOT NULL,
+    monto DOUBLE PRECISION NOT NULL,
+    dia_vencimiento INTEGER NOT NULL DEFAULT 1,
+    cuenta TEXT NOT NULL DEFAULT 'Efectivo',
+    user_id BIGINT NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS pagos_gastos_fijos (
+    id BIGSERIAL PRIMARY KEY,
+    gasto_fijo_id BIGINT NOT NULL,
+    mes INTEGER NOT NULL,
+    anio INTEGER NOT NULL,
+    pagado BOOLEAN NOT NULL DEFAULT FALSE,
+    fecha_pago TEXT
 );"""
 
 def _has_column(table, column):
@@ -995,6 +1029,7 @@ def _load_cuentas_usuario():
     return {}
 
 def page_transacciones():
+    hoy = date.today()
     # ── Sección "Mis Cuentas" ──────────────────────────────────────────────
     st.markdown(section_title("Mis cuentas"), unsafe_allow_html=True)
     cuentas_usuario = _load_cuentas_usuario()
@@ -1059,6 +1094,18 @@ def page_transacciones():
     categoria = st.selectbox("Categoría", cats, key="new_cat")
     moneda    = st.selectbox("Moneda", MONEDAS, key="new_moneda")
 
+    # ── Selector de gasto fijo: Obligaciones ──────────────────────────────────
+    gastos_fijos_dict = {}
+    needs_obligacion  = (tipo == "Gasto" and categoria == "Obligaciones")
+    if needs_obligacion:
+        gf_list = _load_gastos_fijos()
+        if gf_list:
+            gastos_fijos_dict = {g["nombre"]: g for g in gf_list}
+            st.selectbox("Gasto fijo", list(gastos_fijos_dict.keys()), key="new_gasto_fijo",
+                         help="Al guardar se marcará como pagado en el checklist del mes")
+        else:
+            st.info("Primero agrega gastos fijos en la pestaña Obligaciones 📋")
+
     # ── Selector de activo: Portafolio (gasto) o Retiro de portafolio (ingreso)
     activos_dict    = {}
     needs_activo    = (tipo == "Gasto" and categoria == "Portafolio") or \
@@ -1121,6 +1168,10 @@ def page_transacciones():
                 cuenta_id_val = int(cuentas_usuario_form[cuenta_sel]["id"])
                 cuenta_nom    = cuentas_usuario_form[cuenta_sel]["nombre"]
 
+            # Resolve gasto fijo (Obligaciones)
+            gasto_fijo_nom = st.session_state.get("new_gasto_fijo") if needs_obligacion else None
+            gasto_fijo_rec = gastos_fijos_dict.get(gasto_fijo_nom) if gasto_fijo_nom else None
+
             # Resolve tarjeta seleccionada
             tarjeta_nom = st.session_state.get("new_tarjeta_tc") if needs_tarjeta else None
             tarjeta_rec = next((t for t in tarjetas_list if t["nombre"] == tarjeta_nom), None) if tarjeta_nom else None
@@ -1150,6 +1201,8 @@ def page_transacciones():
                         desc_auto = f"Inversión en {activo_nom}"
                     elif cat_val == "Retiro de portafolio" and activo_nom:
                         desc_auto = f"Retiro de {activo_nom}"
+                    elif cat_val == "Obligaciones" and gasto_fijo_rec:
+                        desc_auto = f"Pago: {gasto_fijo_rec['nombre']}"
                     elif tarjeta_rec:
                         desc_auto = f"Cargo a {tarjeta_rec['nombre']}"
                 payload = {
@@ -1184,9 +1237,14 @@ def page_transacciones():
                     except Exception:
                         pass
 
-                nota_activo  = f" → {activo_nom} actualizado" if activo_nom else ""
-                nota_tarjeta = f" · Saldo {tarjeta_rec['nombre']} actualizado" if tarjeta_rec else ""
-                st.success(f"{'Ingreso' if tipo=='Ingreso' else 'Gasto'} de {sim} {monto:,.0f} guardado{nota_activo}{nota_tarjeta} ✓")
+                # Marcar gasto fijo como pagado en Obligaciones
+                if gasto_fijo_rec:
+                    _marcar_gasto_fijo_pagado(int(gasto_fijo_rec["id"]), hoy.month, hoy.year)
+
+                nota_activo    = f" → {activo_nom} actualizado" if activo_nom else ""
+                nota_tarjeta   = f" · Saldo {tarjeta_rec['nombre']} actualizado" if tarjeta_rec else ""
+                nota_obligacion = f" · {gasto_fijo_rec['nombre']} marcado como pagado ✓" if gasto_fijo_rec else ""
+                st.success(f"{'Ingreso' if tipo=='Ingreso' else 'Gasto'} de {sim} {monto:,.0f} guardado{nota_activo}{nota_tarjeta}{nota_obligacion} ✓")
                 st.rerun()
 
     resp = sb().table("transacciones").select("*").eq("user_id", uid()).order("fecha", desc=True).order("id", desc=True).execute()
@@ -1802,6 +1860,201 @@ def page_deudas():
                         st.rerun()
 
 
+# ─── Obligaciones Page ────────────────────────────────────────────────────────
+CATS_GASTO_FIJO = ["Arriendo", "Servicios", "Suscripciones", "Créditos", "Seguros", "Otro"]
+
+def _load_gastos_fijos():
+    resp = sb().table("gastos_fijos").select("*").eq("user_id", uid()).order("dia_vencimiento").execute()
+    return resp.data or []
+
+def _load_pagos_mes(mes, anio):
+    """Devuelve dict {gasto_fijo_id: registro_pago} para el mes/año dado."""
+    ids_resp = sb().table("gastos_fijos").select("id").eq("user_id", uid()).execute()
+    ids = [r["id"] for r in (ids_resp.data or [])]
+    if not ids:
+        return {}
+    resp = sb().table("pagos_gastos_fijos").select("*").in_("gasto_fijo_id", ids).eq("mes", mes).eq("anio", anio).execute()
+    return {r["gasto_fijo_id"]: r for r in (resp.data or [])}
+
+def _ensure_pago(gasto_id, mes, anio):
+    """Crea registro de pago si no existe; retorna el registro."""
+    pagos = _load_pagos_mes(mes, anio)
+    if gasto_id in pagos:
+        return pagos[gasto_id]
+    sb().table("pagos_gastos_fijos").insert({
+        "gasto_fijo_id": gasto_id, "mes": mes, "anio": anio,
+        "pagado": False, "fecha_pago": None
+    }).execute()
+    pagos2 = _load_pagos_mes(mes, anio)
+    return pagos2.get(gasto_id, {})
+
+def _marcar_gasto_fijo_pagado(gasto_id, mes, anio):
+    """Marca un gasto fijo como pagado en el mes actual."""
+    pagos = _load_pagos_mes(mes, anio)
+    hoy   = str(date.today())
+    if gasto_id in pagos:
+        sb().table("pagos_gastos_fijos").update({
+            "pagado": True, "fecha_pago": hoy
+        }).eq("id", pagos[gasto_id]["id"]).execute()
+    else:
+        sb().table("pagos_gastos_fijos").insert({
+            "gasto_fijo_id": gasto_id, "mes": mes, "anio": anio,
+            "pagado": True, "fecha_pago": hoy
+        }).execute()
+
+def page_obligaciones():
+    hoy   = date.today()
+    mes   = hoy.month
+    anio  = hoy.year
+
+    st.markdown("""
+    <div style="background:linear-gradient(135deg,#322b49 0%,#3e3260 100%);
+                border-radius:20px;padding:1.4rem 1.6rem;margin-bottom:16px;">
+      <p style="color:rgba(255,255,255,0.5);font-size:10px;text-transform:uppercase;
+                letter-spacing:1.2px;margin:0 0 4px;font-weight:600;">Compromisos del mes</p>
+      <p style="color:#eab000;font-size:1.5rem;font-weight:800;margin:0;letter-spacing:-0.5px;">
+        📋 Obligaciones</p>
+    </div>""", unsafe_allow_html=True)
+
+    gastos = _load_gastos_fijos()
+    pagos  = _load_pagos_mes(mes, anio)
+
+    total      = sum(float(g["monto"]) for g in gastos)
+    pagado_sum = sum(float(g["monto"]) for g in gastos if pagos.get(g["id"], {}).get("pagado"))
+    pendiente  = total - pagado_sum
+
+    # ── Resumen ──────────────────────────────────────────────────────────────
+    if gastos:
+        st.markdown(card_wrap(f"""
+          <p style="color:#5c5474;font-size:10px;text-transform:uppercase;letter-spacing:1px;
+                    margin:0 0 10px;font-weight:600;">Resumen del mes</p>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:80px;background:#F5F0E8;border-radius:14px;padding:12px;">
+              <p style="color:#6b6285;font-size:10px;text-transform:uppercase;letter-spacing:0.8px;
+                        margin:0 0 4px;font-weight:600;">Total</p>
+              <p style="color:#322b49;font-size:18px;font-weight:800;margin:0;">{cop(total)}</p>
+            </div>
+            <div style="flex:1;min-width:80px;background:rgba(74,124,89,0.08);border-radius:14px;padding:12px;">
+              <p style="color:#6b6285;font-size:10px;text-transform:uppercase;letter-spacing:0.8px;
+                        margin:0 0 4px;font-weight:600;">Pagado</p>
+              <p style="color:#4A7C59;font-size:18px;font-weight:800;margin:0;">{cop(pagado_sum)}</p>
+            </div>
+            <div style="flex:1;min-width:80px;background:rgba(192,57,43,0.08);border-radius:14px;padding:12px;">
+              <p style="color:#6b6285;font-size:10px;text-transform:uppercase;letter-spacing:0.8px;
+                        margin:0 0 4px;font-weight:600;">Pendiente</p>
+              <p style="color:#C0392B;font-size:18px;font-weight:800;margin:0;">{cop(pendiente)}</p>
+            </div>
+          </div>
+        """), unsafe_allow_html=True)
+
+    # ── Checklist mensual ────────────────────────────────────────────────────
+    st.markdown(section_title(f"Gastos fijos — {hoy.strftime('%B %Y').capitalize()}"), unsafe_allow_html=True)
+
+    if not gastos:
+        st.markdown(card_wrap('<p style="color:#6b6285;font-size:13px;text-align:center;padding:0.5rem 0;margin:0;">Aún no tienes gastos fijos. Agrégalos abajo 👇</p>'), unsafe_allow_html=True)
+    else:
+        cat_icons_ob = {"Arriendo":"🏠","Servicios":"⚡","Suscripciones":"📺","Créditos":"💳","Seguros":"🛡️","Otro":"📋"}
+        for g in gastos:
+            gid     = g["id"]
+            pago    = pagos.get(gid, {})
+            pagado  = pago.get("pagado", False)
+            vence   = int(g["dia_vencimiento"])
+            vencido = (not pagado) and (hoy.day > vence)
+            icon    = cat_icons_ob.get(g["categoria"], "📋")
+
+            if pagado:
+                color_borde = "#4A7C59"
+                color_bg    = "rgba(74,124,89,0.06)"
+                estado_html = '<span style="color:#4A7C59;font-size:11px;font-weight:700;">✓ Pagado</span>'
+                nombre_style = "color:#6b6285;text-decoration:line-through;"
+            elif vencido:
+                color_borde = "#C0392B"
+                color_bg    = "rgba(192,57,43,0.04)"
+                estado_html = f'<span style="color:#C0392B;font-size:11px;font-weight:700;">⚠ Vencido (día {vence})</span>'
+                nombre_style = "color:#1c1829;"
+            else:
+                color_borde = "rgba(0,0,0,0.06)"
+                color_bg    = "#FFFFFF"
+                estado_html = f'<span style="color:#6b6285;font-size:11px;">Vence día {vence}</span>'
+                nombre_style = "color:#1c1829;"
+
+            col_info, col_btn = st.columns([5, 1])
+            with col_info:
+                st.markdown(f"""
+                <div style="background:{color_bg};border:1.5px solid {color_borde};border-radius:16px;
+                            padding:12px 16px;display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+                  <span style="font-size:22px;">{icon}</span>
+                  <div style="flex:1;">
+                    <p style="{nombre_style}font-size:14px;font-weight:600;margin:0;">{g['nombre']}</p>
+                    <p style="color:#6b6285;font-size:11px;margin:2px 0 0;">{g['categoria']} · {g['cuenta']}</p>
+                    <div style="margin-top:3px;">{estado_html}</div>
+                  </div>
+                  <p style="color:#322b49;font-size:15px;font-weight:700;margin:0;">{cop(g['monto'])}</p>
+                </div>""", unsafe_allow_html=True)
+            with col_btn:
+                if not pagado:
+                    if st.button("✓", key=f"pagar_{gid}", help="Marcar como pagado",
+                                 use_container_width=True):
+                        _marcar_gasto_fijo_pagado(gid, mes, anio)
+                        st.rerun()
+                else:
+                    if st.button("↩", key=f"desmarcar_{gid}", help="Desmarcar",
+                                 use_container_width=True):
+                        pago_rec = pagos.get(gid)
+                        if pago_rec:
+                            sb().table("pagos_gastos_fijos").update({
+                                "pagado": False, "fecha_pago": None
+                            }).eq("id", pago_rec["id"]).execute()
+                        st.rerun()
+
+    # ── Formulario para agregar gasto fijo ───────────────────────────────────
+    st.markdown(section_title("Agregar gasto fijo"), unsafe_allow_html=True)
+    with st.expander("➕ Nuevo gasto fijo"):
+        with st.form("form_gasto_fijo", clear_on_submit=True):
+            gf_nombre = st.text_input("Nombre", placeholder="Arriendo, Netflix, Seguro de vida…")
+            gf_c1, gf_c2 = st.columns(2)
+            with gf_c1:
+                gf_cat  = st.selectbox("Categoría", CATS_GASTO_FIJO)
+                gf_dia  = st.number_input("Día de vencimiento", min_value=1, max_value=31, value=1, step=1, format="%d")
+            with gf_c2:
+                gf_monto = st.number_input("Monto ($)", min_value=0.0, value=None,
+                                            placeholder="0", step=10000.0, format="%.0f")
+                cuentas_usuario_ob = _load_cuentas_usuario()
+                gf_cuenta_opts     = list(cuentas_usuario_ob.keys()) if cuentas_usuario_ob else CUENTAS
+                gf_cuenta = st.selectbox("Cuenta de pago", gf_cuenta_opts)
+            if st.form_submit_button("Guardar gasto fijo", use_container_width=True):
+                if not gf_nombre:
+                    st.warning("Escribe un nombre para el gasto fijo.")
+                elif not gf_monto or gf_monto <= 0:
+                    st.warning("El monto debe ser mayor a cero.")
+                else:
+                    try:
+                        sb().table("gastos_fijos").insert({
+                            "nombre": gf_nombre.strip(),
+                            "categoria": gf_cat,
+                            "monto": gf_monto,
+                            "dia_vencimiento": int(gf_dia),
+                            "cuenta": gf_cuenta,
+                            "user_id": uid()
+                        }).execute()
+                        st.success(f"Gasto fijo '{gf_nombre}' guardado ✓")
+                        st.rerun()
+                    except Exception as e:
+                        st.warning(f"Hubo un problema al guardar. Intenta de nuevo. ({e})")
+
+    # ── Eliminar gasto fijo ───────────────────────────────────────────────────
+    if gastos:
+        st.markdown(section_title("Eliminar gasto fijo"), unsafe_allow_html=True)
+        with st.expander("🗑️ Eliminar"):
+            nombres_gastos = {g["nombre"]: g["id"] for g in gastos}
+            sel_eliminar = st.selectbox("Selecciona el gasto a eliminar", list(nombres_gastos.keys()), key="sel_del_gf")
+            if st.button("Eliminar", key="btn_del_gf"):
+                gid_del = nombres_gastos[sel_eliminar]
+                sb().table("pagos_gastos_fijos").delete().eq("gasto_fijo_id", gid_del).execute()
+                sb().table("gastos_fijos").delete().eq("id", gid_del).eq("user_id", uid()).execute()
+                st.rerun()
+
+
 # ─── Consil.ia Page ───────────────────────────────────────────────────────────
 def page_consilia():
     resp = sb().table("transacciones").select("*").eq("user_id", uid()).order("fecha", desc=True).execute()
@@ -1941,7 +2194,7 @@ else:
     st.markdown("<div style='margin-bottom:1rem;'></div>", unsafe_allow_html=True)
 
     is_admin = st.session_state.get("user_email", "").lower() == ADMIN_EMAIL
-    tab_names = ["Dashboard", "Transacciones", "Portafolio", "Metas", "✨ Consil.ia", "Deudas"]
+    tab_names = ["Dashboard", "Transacciones", "Portafolio", "Metas", "✨ Consil.ia", "Deudas", "📋 Obligaciones"]
     if is_admin:
         tab_names.append("Admin")
 
@@ -1952,5 +2205,6 @@ else:
     with tabs[3]: page_metas()
     with tabs[4]: page_consilia()
     with tabs[5]: page_deudas()
+    with tabs[6]: page_obligaciones()
     if is_admin:
-        with tabs[6]: page_admin()
+        with tabs[7]: page_admin()
